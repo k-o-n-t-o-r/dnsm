@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="460" height="192">
+    <defs>
+        <linearGradient id="card-bg" x1="16" y1="16" x2="16" y2="176" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#0f141a" />
+            <stop offset="1" stop-color="#121923" />
+        </linearGradient>
+
+        <filter id="card-shadow" x="-40" y="-40" width="632" height="272"
+            filterUnits="userSpaceOnUse">
+            <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.8" />
+        </filter>
+        <filter id="text-glow" x="-40" y="-40" width="632" height="272" filterUnits="userSpaceOnUse">
+            <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#1df2a6" flood-opacity="0.33" />
+        </filter>
+        <filter id="outline-glow" x="-40" y="-40" width="632" height="272"
+            filterUnits="userSpaceOnUse">
+            <feDropShadow dx="0" dy="0" stdDeviation="1" flood-color="#1df2a6" flood-opacity="0.66" />
+        </filter>
+        <style>
+            text {
+            font-family: "DejaVu Sans Mono", "Noto Sans Mono", "Fira Code", "DM Mono", "Menlo",
+            "Monaco", "Consolas", "Liberation Mono", "Courier New", monospace;
+            font-size: 16px;
+            letter-spacing: -0.33px;
+            font-kerning: none;
+            fill: #1df2a6;
+            }
+        </style>
+    </defs>
+    <g filter="url(#card-shadow)">
+        <rect width="430" height="159" x="16.5" y="16.5" fill="url(#card-bg)" stroke="#1b2633"
+            rx="10"
+            ry="10" />
+        <rect width="431" height="160" x="16" y="16" fill="none" stroke="#00ffdc"
+            stroke-opacity=".99" filter="url(#outline-glow)" rx="10.5" ry="10.5" />
+    </g>
+    <text xml:space="preserve" y="64" filter="url(#text-glow)">
+        <tspan x="62" dy="0">██████╗ ███╗   ██╗███████╗███╗   ███╗</tspan>
+        <tspan x="62" dy="16">██╔══██╗████╗  ██║██╔════╝████╗ ████║</tspan>
+        <tspan x="62" dy="16">██║  ██║██╔██╗ ██║███████╗██╔████╔██║</tspan>
+        <tspan x="62" dy="16">██║  ██║██║╚██╗██║╚════██║██║╚██╔╝██║</tspan>
+        <tspan x="62" dy="16">██████╔╝██║ ╚████║███████║██║ ╚═╝ ██║</tspan>
+        <tspan x="62" dy="16">╚═════╝ ╚═╝  ╚═══╝╚══════╝╚═╝     ╚═╝</tspan>
+    </text>
+</svg>

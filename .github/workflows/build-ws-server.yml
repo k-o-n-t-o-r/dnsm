@@ -1,0 +1,76 @@
+name: build-linux-ws-server
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ws-server (${{ matrix.target }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ x86_64-unknown-linux-musl, aarch64-unknown-linux-musl ]
+
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable) and targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.12.0
+
+      - name: Cache cargo registry + git + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Compute version
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ver=$(git describe --tags --always --dirty || echo "dev")
+          echo "VERSION=$ver" >> "$GITHUB_ENV"
+
+      - name: Build ws-server (musl, static)
+        run: |
+          # dnsm-ws requires optional features: sqlite + ws-server; default features include native-cli
+          cargo zigbuild --release --target ${{ matrix.target }} --bin dnsm-ws --features sqlite,ws-server
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          outdir="dist/${{ matrix.target }}"
+          mkdir -p "$outdir"
+          cp "target/${{ matrix.target }}/release/dnsm-ws" "$outdir/"
+          strip -s "$outdir/dnsm-ws" || true
+          tar czf "dnsm-ws-${{ env.VERSION }}-${{ matrix.target }}.tar.gz" -C "$outdir" dnsm-ws
+          sha256sum "dnsm-ws-${{ env.VERSION }}-${{ matrix.target }}.tar.gz" > "dnsm-ws-${{ env.VERSION }}-${{ matrix.target }}.tar.gz.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dnsm-ws-${{ matrix.target }}
+          path: |
+            dnsm-ws-${{ env.VERSION }}-${{ matrix.target }}.tar.gz
+            dnsm-ws-${{ env.VERSION }}-${{ matrix.target }}.tar.gz.sha256

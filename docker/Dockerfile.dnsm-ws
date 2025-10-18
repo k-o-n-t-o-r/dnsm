@@ -1,0 +1,39 @@
+FROM rust:bookworm AS build
+WORKDIR /app
+ENV CARGO_HOME=/usr/local/cargo
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY README.md ./README.md
+
+RUN --mount=type=cache,id=dnsm-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=dnsm-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    cargo install --locked --path . --bin dnsm-ws --features "sqlite,ws-server"
+
+FROM debian:bookworm-slim AS runtime
+LABEL org.opencontainers.image.title="dnsm-ws" \
+      org.opencontainers.image.source="https://github.com/k-o-n-t-o-r/dnsm" \
+      org.opencontainers.image.description="WebSocket + HTTP gateway for dnsm mailboxes"
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    rm -rf /var/lib/apt/lists/*; \
+    adduser --system --group --no-create-home dnsm; \
+    mkdir -p /var/lib/dnsm; \
+    chown -R dnsm:dnsm /var/lib/dnsm
+
+COPY --from=build /usr/local/cargo/bin/dnsm-ws /usr/local/bin/dnsm-ws
+
+USER dnsm:dnsm
+WORKDIR /app
+
+ENV DNSM_WS_BIND=0.0.0.0:8787 \
+    DNSM_DB=/var/lib/dnsm/dnsm.sqlite \
+    DNSM_WS_POLL_MS=1000
+
+EXPOSE 8787
+
+# Use an entrypoint and let the user pass flags via docker run or compose
+ENTRYPOINT ["/usr/local/bin/dnsm-ws"]
+CMD ["--help"]

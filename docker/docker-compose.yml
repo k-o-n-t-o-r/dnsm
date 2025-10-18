@@ -1,0 +1,50 @@
+services:
+  dnsm-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dnsm-server
+    image: dnsm-server:local
+    container_name: dnsm-server
+    restart: unless-stopped
+    # Bind to unprivileged port by default; add NET_BIND_SERVICE to use :53
+    command: [
+      "--bind", "0.0.0.0:5353",
+      "--respond_with", "0.0.0.0",
+      "--log", "/var/log/dnsm/queries.log",
+      "--db", "/var/lib/dnsm/dnsm.sqlite",
+      "--ans-ttl", "20", "--neg-ttl", "100",
+      "k.example"
+    ]
+    cap_add:
+      - NET_BIND_SERVICE
+    ports:
+      - "5353:5353/udp"
+      - "5353:5353/tcp"  # used for --tcp-mailbox
+    volumes:
+      - dnsm_data:/var/lib/dnsm
+      - dnsm_logs:/var/log/dnsm
+
+  dnsm-ws:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dnsm-ws
+    image: dnsm-ws:local
+    container_name: dnsm-ws
+    restart: unless-stopped
+    command: [
+      "--bind", "0.0.0.0:8787",
+      "--db", "/var/lib/dnsm/dnsm.sqlite",
+      "--poll-ms", "1000",
+      "--allow-all-origins"
+    ]
+    depends_on:
+      - dnsm-server
+    ports:
+      - "8787:8787"
+    volumes:
+      - dnsm_data:/var/lib/dnsm
+
+volumes:
+  dnsm_data:
+  dnsm_logs:
+

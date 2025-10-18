@@ -1,0 +1,99 @@
+:root {
+  /* Color palette */
+  --bg: #0b0f14;
+  --bg-alt: #12161b;
+  --panel: #0f141a;
+  --panel-2: #121923;
+  --border: #1b2633;
+  --text: #c9d1d9;
+  --muted: #8aa0b3;
+  --muted-2: #70879a;
+  --accent: #1df2a6;
+  --accent-2: #0aff99;
+  --accent-glow: #00FFDC;
+  --danger: #ff5370;
+  --warn: #ffb86b;
+  --good: #2ee57b;
+
+  /* Shadows */
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.6);
+  --glow: 0 0 14px rgba(29, 242, 166, 0.08);
+
+  /* Typography */
+  --font-mono: "Noto Sans Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+    "Cascadia Mono", Consolas, "Liberation Mono", "DejaVu Sans Mono",
+    "Droid Sans Mono", "Roboto Mono", monospace;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+
+  /* Borders */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+}
+
+@font-face {
+  font-family: 'Noto Sans Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-stretch: normal;
+  font-display: swap;
+  src: url(/a.ttf) format('truetype');
+}
+
+@font-face {
+  font-family: 'Noto Sans Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-stretch: normal;
+  font-display: swap;
+  src: url(/b.ttf) format('truetype');
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  letter-spacing: 0.1px;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}

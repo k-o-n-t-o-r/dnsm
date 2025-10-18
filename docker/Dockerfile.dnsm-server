@@ -1,0 +1,43 @@
+FROM rust:bookworm AS build
+WORKDIR /app
+ENV CARGO_HOME=/usr/local/cargo
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY README.md ./README.md
+
+RUN --mount=type=cache,id=dnsm-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=dnsm-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    cargo install --locked --path . --bin dnsm-server --features sqlite
+
+FROM debian:bookworm-slim AS runtime
+LABEL org.opencontainers.image.title="dnsm-server" \
+      org.opencontainers.image.source="https://github.com/k-o-n-t-o-r/dnsm" \
+      org.opencontainers.image.description="dnsm: Toolkit for Data Exfiltration via DNS"
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates libcap2-bin; \
+    rm -rf /var/lib/apt/lists/*; \
+    adduser --system --group --no-create-home dnsm; \
+    mkdir -p /var/lib/dnsm /var/log/dnsm; \
+    chown -R dnsm:dnsm /var/lib/dnsm /var/log/dnsm
+
+COPY --from=build /usr/local/cargo/bin/dnsm-server /usr/local/bin/dnsm-server
+
+RUN setcap 'cap_net_bind_service=+ep' /usr/local/bin/dnsm-server || true
+
+USER dnsm:dnsm
+WORKDIR /app
+
+ENV DNSM_BIND=0.0.0.0:53 \
+    DNSM_ZONE=x.example \
+    DNSM_FIXED_IP=127.0.0.1 \
+    DNSM_LOG=/var/log/dnsm/queries.log \
+    DNSM_DB=/var/lib/dnsm/dnsm.sqlite
+
+EXPOSE 53/udp 53/tcp
+
+# Use an entrypoint and let the user pass flags/ZONE via docker run or compose
+ENTRYPOINT ["/usr/local/bin/dnsm-server"]
+CMD ["--help"]
