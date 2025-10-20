@@ -1,4 +1,4 @@
-name: release-linux
+name: release-github
 
 on:
   push:
@@ -10,11 +10,6 @@ on:
         description: "SemVer to build (e.g., 1.2.3). Leave empty to use Cargo.toml"
         required: false
         type: string
-      push_images:
-        description: "Also push Docker images to GHCR (manual runs)"
-        required: false
-        default: false
-        type: boolean
       create_release:
         description: "Also create a GitHub Release (manual runs)"
         required: false
@@ -23,7 +18,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
   build:
@@ -175,150 +169,3 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.sha256
-
-  docker-arch:
-    name: docker (${{ matrix.image }} @ ${{ matrix.arch }})
-    needs: build
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        include:
-          - image: dnsm-server
-            file: docker/Dockerfile.dnsm-server
-            cache_scope: dnsm-server
-            platform: linux/amd64
-            arch: amd64
-          - image: dnsm-server
-            file: docker/Dockerfile.dnsm-server
-            cache_scope: dnsm-server
-            platform: linux/arm64
-            arch: arm64
-          - image: dnsm-ws
-            file: docker/Dockerfile.dnsm-ws
-            cache_scope: dnsm-ws
-            platform: linux/amd64
-            arch: amd64
-          - image: dnsm-ws
-            file: docker/Dockerfile.dnsm-ws
-            cache_scope: dnsm-ws
-            platform: linux/arm64
-            arch: arm64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute version (tag or input)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ver="${{ inputs.version }}"
-            if [ -z "$ver" ]; then
-              ver=$(sed -n 's/^version\s*=\s*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' Cargo.toml | head -n1)
-            fi
-            tag="v${ver}"
-          else
-            tag="${GITHUB_REF_NAME}"
-            ver="${tag#v}"
-          fi
-          echo "TAG=$tag" >> "$GITHUB_ENV"
-          echo "VERSION=$ver" >> "$GITHUB_ENV"
-
-      - name: Docker metadata (${{ matrix.image }})
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=v${{ env.VERSION }}
-            type=raw,value=${{ env.VERSION }}
-            type=raw,value=latest
-          flavor: |
-            latest=false
-            suffix=-${{ matrix.arch }}
-
-      - name: Build and push ${{ matrix.image }} (${{ matrix.arch }})
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.file }}
-          push: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_images) }}
-          platforms: ${{ matrix.platform }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.cache_scope }}-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}-${{ matrix.arch }}
-
-  docker-manifest:
-    name: docker manifest (dnsm-server, dnsm-ws)
-    needs: docker-arch
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-      packages: write
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_images)
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute version (tag or input)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ver="${{ inputs.version }}"
-            if [ -z "$ver" ]; then
-              ver=$(sed -n 's/^version\s*=\s*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' Cargo.toml | head -n1)
-            fi
-            tag="v${ver}"
-          else
-            tag="${GITHUB_REF_NAME}"
-            ver="${tag#v}"
-          fi
-          echo "TAG=$tag" >> "$GITHUB_ENV"
-          echo "VERSION=$ver" >> "$GITHUB_ENV"
-
-      - name: Create and push multi-arch manifests
-        shell: bash
-        env:
-          OWNER: ${{ github.repository_owner }}
-        run: |
-          set -euxo pipefail
-          for img in dnsm-server dnsm-ws; do
-            for t in "v${VERSION}" "${VERSION}" latest; do
-              docker buildx imagetools create \
-                --tag ghcr.io/${OWNER}/${img}:${t} \
-                ghcr.io/${OWNER}/${img}:${t}-amd64 \
-                ghcr.io/${OWNER}/${img}:${t}-arm64 || true
-            done
-          done
