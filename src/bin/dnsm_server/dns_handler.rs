@@ -222,11 +222,37 @@ pub(crate) fn format_socket(addr: SocketAddr) -> String {
     }
 }
 
-fn decompress_lzma_mem(input: &[u8]) -> Result<Vec<u8>, String> {
-    let mut reader = lzma_rust2::LzmaReader::new_mem_limit(Cursor::new(input), u32::MAX, None)
+fn decompress_lzma_mem(input: &[u8], max_bytes: u32) -> Result<Vec<u8>, String> {
+    let mem_limit = if max_bytes == 0 { u32::MAX } else { max_bytes };
+    let mut reader = lzma_rust2::LzmaReader::new_mem_limit(Cursor::new(input), mem_limit, None)
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    reader.read_to_end(&mut out).map_err(|e| e.to_string())?;
+    if max_bytes > 0 {
+        const CHUNK_SIZE: usize = 8192;
+        let mut buffer = [0u8; CHUNK_SIZE];
+        let mut total_read: u32 = 0;
+        loop {
+            let n = reader.read(&mut buffer).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+
+            let error_message =
+                || format!("Decompressed payload exceeds limit of {} bytes.", max_bytes);
+
+            total_read = total_read
+                .checked_add(n as u32)
+                .ok_or_else(|| error_message())?;
+
+            if total_read > max_bytes {
+                return Err(error_message());
+            }
+
+            out.extend_from_slice(&buffer[..n]);
+        }
+    } else {
+        reader.read_to_end(&mut out).map_err(|e| e.to_string())?;
+    }
     Ok(out)
 }
 
@@ -435,7 +461,7 @@ pub(crate) fn try_handle_dnsm(
     }
 
     if header.is_first && header.remaining == 0 {
-        let data = match decompress_lzma_mem(&bytes[offset..]) {
+        let data = match decompress_lzma_mem(&bytes[offset..], cfg.max_decompressed_bytes) {
             Ok(v) => v,
             Err(err) => {
                 log_event(
@@ -544,7 +570,7 @@ pub(crate) fn try_handle_dnsm(
                     return;
                 }
             }
-            let data = match decompress_lzma_mem(&assembled) {
+            let data = match decompress_lzma_mem(&assembled, cfg.max_decompressed_bytes) {
                 Ok(v) => v,
                 Err(err) => {
                     log_event(

@@ -30,6 +30,7 @@ pub(crate) struct ServerCfg {
     // When true, reject decoded messages that contain any non-ASCII byte (>= 0x80).
     accept_ascii_only: bool,
     no_response: bool,
+    max_decompressed_bytes: u32,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -107,6 +108,15 @@ struct ServerArgs {
     /// Process queries but send no responses when enabled
     #[arg(long = "no-response")]
     no_response: bool,
+
+    /// Maximum decompressed payload size in bytes (default: 12582912 = 12MB).
+    /// Prevents decompression bomb attacks. Set to 0 to disable limit (unsafe).
+    #[arg(
+        long = "max-decompressed-bytes",
+        value_name = "BYTES",
+        default_value_t = 12 * 1024 * 1024
+    )]
+    max_decompressed_bytes: u32,
     // tcp-mailbox flag kept above to surface next to mailbox-zone in --help output
 }
 
@@ -162,6 +172,7 @@ fn main() -> std::io::Result<()> {
         neg_ttl,
         accept_ascii_only,
         no_response,
+        max_decompressed_bytes,
         ..
     } = args;
 
@@ -242,6 +253,7 @@ fn main() -> std::io::Result<()> {
         pretty_stdout: true,
         accept_ascii_only,
         no_response,
+        max_decompressed_bytes,
     };
     // Optionally spawn mailbox-only TCP listener
     if tcp_mailbox && cfg.mailbox_zone_labels.as_ref().is_some() {
