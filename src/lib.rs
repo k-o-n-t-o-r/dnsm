@@ -119,6 +119,12 @@ fn base32_nopad_encode(data: &[u8]) -> String {
 }
 
 pub fn base32_nopad_decode(s: &str) -> Option<Vec<u8>> {
+    const MAX_BASE32_INPUT: usize = 512;
+
+    if s.len() > MAX_BASE32_INPUT {
+        return None;
+    }
+
     let mut acc: u64 = 0;
     let mut acc_bits: u32 = 0;
     let mut out: Vec<u8> = Vec::with_capacity(s.len() * 5 / 8);
