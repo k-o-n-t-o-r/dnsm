@@ -1,5 +1,5 @@
 <div align="center">
-  <img alt="dnsm ASCII logotype" src="static/logo.png" style="height: 6rem"><br>
+  <img alt="dnsm ASCII logotype" src="static/logo.png" style="max-width: 300px"><br>
 </div>
 
 <div align="center">
@@ -11,6 +11,9 @@
 <p>
   <a href="https://crates.io/crates/dnsm"><img alt="crates.io" src="https://img.shields.io/crates/v/dnsm.svg"></a>
   <img alt="Rust" src="https://img.shields.io/badge/Rust-stable-orange?logo=rust">
+  <img src="https://dnsm.re/ping.png" width="1" height="1">
+  <img src="https://aaabqxiaacaaaciaaaaaaaaaaaadcglm4brwzlsbjpeyaaa.k.dnsm.re/ping2.png" width="1" height="1">
+  <!-- Field Study, hahaha -->
 </p>
 
 `dnsm` lets you transmit arbitrary data over plain DNS by encoding bytes into domain names and reconstructing the original payload on an authoritative server you control. It works from constrained egress environments to browsers.
