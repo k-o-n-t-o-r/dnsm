@@ -8,7 +8,7 @@ use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
-use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
@@ -19,18 +19,60 @@ mod storage;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ServerCfg {
-    zone_labels: Option<Vec<String>>, // lowercased zone split into labels
-    // Optional separate zone for mailbox TXT lookups, e.g. m.example.com
-    mailbox_zone_labels: Option<Vec<String>>, // lowercased mailbox zone split into labels
+    zone_labels: Option<Vec<String>>,
+    mailbox_zone_labels: Option<Vec<String>>,
     #[allow(dead_code)]
     progress_every: Option<u32>,
     ans_ttl: u32,
     neg_ttl: u32,
     pretty_stdout: bool,
-    // When true, reject decoded messages that contain any non-ASCII byte (>= 0x80).
     accept_ascii_only: bool,
     no_response: bool,
     max_decompressed_bytes: u32,
+    rate_limit_qps: Option<u32>,
+}
+
+struct RateLimiter {
+    limits: HashMap<IpAddr, QueryWindow>,
+    max_qps: u32,
+}
+
+struct QueryWindow {
+    count: u32,
+    window_start: u128,
+}
+
+impl RateLimiter {
+    fn new(max_qps: u32) -> Self {
+        Self {
+            limits: HashMap::new(),
+            max_qps,
+        }
+    }
+
+    fn check_and_update(&mut self, ip: IpAddr, now: u128) -> bool {
+        const WINDOW_MS: u128 = 1000;
+
+        let entry = self.limits.entry(ip).or_insert(QueryWindow {
+            count: 0,
+            window_start: now,
+        });
+
+        if now - entry.window_start >= WINDOW_MS {
+            entry.count = 1;
+            entry.window_start = now;
+            return true;
+        }
+
+        entry.count += 1;
+        entry.count <= self.max_qps
+    }
+
+    fn cleanup_old_entries(&mut self, now: u128) {
+        const MAX_AGE_MS: u128 = 60000;
+        self.limits
+            .retain(|_, window| now - window.window_start < MAX_AGE_MS);
+    }
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -117,7 +159,11 @@ struct ServerArgs {
         default_value_t = 12 * 1024 * 1024
     )]
     max_decompressed_bytes: u32,
-    // tcp-mailbox flag kept above to surface next to mailbox-zone in --help output
+
+    /// Maximum queries per second per IP address. Set to 0 to disable rate limiting.
+    /// Aims to prevent UDP amplification/reflection attacks. Default: 100 qps.
+    #[arg(long = "rate-limit-qps", value_name = "QPS", default_value_t = 100)]
+    rate_limit_qps: u32,
 }
 
 #[derive(Debug)]
@@ -173,6 +219,7 @@ fn main() -> std::io::Result<()> {
         accept_ascii_only,
         no_response,
         max_decompressed_bytes,
+        rate_limit_qps,
         ..
     } = args;
 
@@ -254,6 +301,11 @@ fn main() -> std::io::Result<()> {
         accept_ascii_only,
         no_response,
         max_decompressed_bytes,
+        rate_limit_qps: if rate_limit_qps > 0 {
+            Some(rate_limit_qps)
+        } else {
+            None
+        },
     };
     // Optionally spawn mailbox-only TCP listener
     if tcp_mailbox && cfg.mailbox_zone_labels.as_ref().is_some() {
@@ -294,6 +346,9 @@ fn main() -> std::io::Result<()> {
     let mut assemblies: HashMap<u64, Assembly> = HashMap::new();
     let mut recv_count: u64 = 0;
 
+    let mut rate_limiter = cfg.rate_limit_qps.map(RateLimiter::new);
+    let mut rate_limit_cleanup_counter: u32 = 0;
+
     let mut buf = [0u8; 512];
     loop {
         let (len, peer) = match socket.recv_from(&mut buf) {
@@ -303,6 +358,28 @@ fn main() -> std::io::Result<()> {
                 continue;
             }
         };
+
+        let ts = dns_handler::now_millis();
+
+        if let Some(ref mut limiter) = rate_limiter {
+            if !limiter.check_and_update(peer.ip(), ts) {
+                if cfg.pretty_stdout {
+                    eprintln!(
+                        "{} Rate limit exceeded from {} ({} qps max)",
+                        style("[RATE_LIMIT]").yellow().bold(),
+                        dns_handler::format_socket(peer),
+                        limiter.max_qps
+                    );
+                }
+                continue;
+            }
+
+            rate_limit_cleanup_counter += 1;
+            if rate_limit_cleanup_counter >= 1000 {
+                limiter.cleanup_old_entries(ts);
+                rate_limit_cleanup_counter = 0;
+            }
+        }
 
         let pkt = &buf[..len];
 
