@@ -618,6 +618,15 @@ pub(crate) fn try_handle_dnsm(
     }
 
     let sid = message_key;
+
+    if !assemblies.contains_key(&sid) && assemblies.len() >= cfg.max_assemblies
+        && let Some((&oldest_sid, _)) = assemblies
+            .iter()
+            .min_by_key(|(_, assembly)| assembly.last_seen)
+        {
+            assemblies.remove(&oldest_sid);
+        }
+
     let sess = assemblies
         .entry(sid)
         .or_insert_with(|| crate::Assembly::new(now));

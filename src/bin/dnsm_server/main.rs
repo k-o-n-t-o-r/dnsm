@@ -30,6 +30,7 @@ pub(crate) struct ServerCfg {
     no_response: bool,
     max_decompressed_bytes: u32,
     rate_limit_qps: Option<u32>,
+    max_assemblies: usize,
 }
 
 struct RateLimiter {
@@ -127,9 +128,17 @@ struct ServerArgs {
     #[arg(long = "progress-every", value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     progress_every: Option<u32>,
 
-    /// Garbage-collect inactive assemblies older than this many ms
+    /// Garbage-collect inactive assemblies older than this many ms (default: 30000ms = 30s)
     #[arg(long = "gc-ms", value_name = "MS")]
     gc_ms: Option<u128>,
+
+    /// Maximum concurrent assembly sessions (prevents memory exhaustion, default: 10_000)
+    #[arg(
+        long = "max-assemblies",
+        value_name = "COUNT",
+        default_value_t = 10_000
+    )]
+    max_assemblies: usize,
 
     /// TTL for A-record answers (default: 0)
     #[arg(long = "ans-ttl", value_name = "SEC", default_value_t = 0)]
@@ -214,6 +223,7 @@ fn main() -> std::io::Result<()> {
         db_path,
         progress_every,
         gc_ms,
+        max_assemblies,
         ans_ttl,
         neg_ttl,
         accept_ascii_only,
@@ -306,6 +316,7 @@ fn main() -> std::io::Result<()> {
         } else {
             None
         },
+        max_assemblies,
     };
     // Optionally spawn mailbox-only TCP listener
     if tcp_mailbox && cfg.mailbox_zone_labels.as_ref().is_some() {
@@ -610,7 +621,7 @@ fn main() -> std::io::Result<()> {
             );
             recv_count += 1;
             if recv_count.is_multiple_of(200) {
-                let age = gc_ms.unwrap_or_else(|| Duration::from_secs(120).as_millis());
+                let age = gc_ms.unwrap_or_else(|| Duration::from_secs(30).as_millis());
                 dns_handler::gc_assemblies(&mut assemblies, ts, age, &mut log, cfg.pretty_stdout);
             }
         }
