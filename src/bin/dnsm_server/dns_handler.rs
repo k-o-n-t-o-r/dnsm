@@ -222,6 +222,92 @@ pub(crate) fn format_socket(addr: SocketAddr) -> String {
     }
 }
 
+/// Validate a domain for storage/logging; returns Ok(domain) or an error string.
+pub(crate) fn validate_and_sanitize_domain(domain: &str) -> Result<String, String> {
+    const MAX_DOMAIN_LENGTH: usize = 255;
+    const MAX_LABEL_LENGTH: usize = 63;
+    const MAX_LABEL_COUNT: usize = 127; // Reasonable limit for label count
+
+    if domain.is_empty() {
+        return Err("empty domain".to_string());
+    }
+
+    if domain.len() > MAX_DOMAIN_LENGTH {
+        return Err(format!(
+            "domain too long ({} bytes, max {})",
+            domain.len(),
+            MAX_DOMAIN_LENGTH
+        ));
+    }
+
+    let labels: Vec<&str> = domain.split('.').collect();
+
+    if labels.len() > MAX_LABEL_COUNT {
+        return Err(format!(
+            "too many labels ({}, max {})",
+            labels.len(),
+            MAX_LABEL_COUNT
+        ));
+    }
+
+    for (idx, label) in labels.iter().enumerate() {
+        if label.is_empty() {
+            if idx != labels.len() - 1 {
+                return Err(format!("empty label at position {}", idx));
+            }
+            continue;
+        }
+
+        if label.len() > MAX_LABEL_LENGTH {
+            return Err(format!(
+                "label '{}' too long ({} bytes, max {})",
+                label,
+                label.len(),
+                MAX_LABEL_LENGTH
+            ));
+        }
+
+        for (char_idx, ch) in label.chars().enumerate() {
+            if !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' {
+                if ch.is_control() {
+                    return Err(format!("control character (0x{:02x}) in label", ch as u32));
+                } else {
+                    return Err(format!("invalid character '{}' in label", ch));
+                }
+            }
+            if ch == '-' && (char_idx == 0 || char_idx == label.len() - 1) {
+                return Err("label cannot start/end with hyphen".to_string());
+            }
+        }
+    }
+
+    Ok(domain.to_string())
+}
+
+/// Sanitize a domain for logs (replace controls/non-ASCII, clamp length).
+pub(crate) fn sanitize_domain_for_logging(domain: &str) -> String {
+    const MAX_LOG_LENGTH: usize = 255;
+
+    let truncated = if domain.len() > MAX_LOG_LENGTH {
+        &domain[..MAX_LOG_LENGTH]
+    } else {
+        domain
+    };
+
+    truncated
+        .chars()
+        .map(|ch| {
+            if ch.is_control() {
+                '?'
+            } else if ch.is_ascii() {
+                ch
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
 fn decompress_lzma_mem(input: &[u8], max_bytes: u32) -> Result<Vec<u8>, String> {
     let mem_limit = if max_bytes == 0 { u32::MAX } else { max_bytes };
     let mut reader = lzma_rust2::LzmaReader::new_mem_limit(Cursor::new(input), mem_limit, None)
@@ -242,7 +328,7 @@ fn decompress_lzma_mem(input: &[u8], max_bytes: u32) -> Result<Vec<u8>, String> 
 
             total_read = total_read
                 .checked_add(n as u32)
-                .ok_or_else(|| error_message())?;
+                .ok_or_else(&error_message)?;
 
             if total_read > max_bytes {
                 return Err(error_message());
@@ -795,5 +881,84 @@ pub(crate) fn gc_assemblies(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_domain_ok() {
+        assert_eq!(
+            validate_and_sanitize_domain("example.com").unwrap(),
+            "example.com"
+        );
+        assert_eq!(
+            validate_and_sanitize_domain("example.com.").unwrap(),
+            "example.com."
+        );
+        assert_eq!(
+            validate_and_sanitize_domain("_sip._tcp.example.com").unwrap(),
+            "_sip._tcp.example.com"
+        );
+    }
+
+    #[test]
+    fn domain_too_long_errors() {
+        let s = format!("{}example.com", "a".repeat(300));
+        let err = validate_and_sanitize_domain(&s).unwrap_err();
+        assert!(err.contains("domain too long"));
+    }
+
+    #[test]
+    fn label_too_long_errors() {
+        let s = format!("{}.com", "a".repeat(64));
+        let err = validate_and_sanitize_domain(&s).unwrap_err();
+        assert!(err.contains("too long"));
+    }
+
+    #[test]
+    fn invalid_char_in_label_errors() {
+        let err = validate_and_sanitize_domain("inv@lid.example").unwrap_err();
+        assert!(err.contains("invalid character") || err.contains("control character"));
+    }
+
+    #[test]
+    fn hyphen_edges_error() {
+        let err1 = validate_and_sanitize_domain("-abc.com").unwrap_err();
+        let err2 = validate_and_sanitize_domain("abc-.com").unwrap_err();
+        assert!(err1.contains("hyphen") && err2.contains("hyphen"));
+    }
+
+    #[test]
+    fn empty_middle_label_errors_trailing_dot_ok() {
+        let err = validate_and_sanitize_domain("a..b.com").unwrap_err();
+        assert!(err.contains("empty label"));
+        assert!(validate_and_sanitize_domain("example.com.").is_ok());
+    }
+
+    #[test]
+    fn too_many_labels_errors() {
+        // 128 one-character labels produce 255 bytes total (within length limit)
+        let many = vec!["a"; 128].join(".");
+        let err = validate_and_sanitize_domain(&many).unwrap_err();
+        assert!(err.contains("too many labels"));
+    }
+
+    #[test]
+    fn sanitize_replaces_controls_and_non_ascii_and_truncates() {
+        let s = "evil\nname";
+        let sanitized = sanitize_domain_for_logging(s);
+        assert_eq!(sanitized, "evil?name");
+
+        let s2 = "éxample.com"; // non-ASCII leading char
+        let sanitized2 = sanitize_domain_for_logging(s2);
+        assert!(sanitized2.starts_with('?'));
+        assert!(sanitized2.ends_with("xample.com"));
+
+        let long = "a".repeat(300);
+        let truncated = sanitize_domain_for_logging(&long);
+        assert_eq!(truncated.len(), 255);
     }
 }

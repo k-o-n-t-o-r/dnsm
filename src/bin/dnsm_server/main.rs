@@ -339,7 +339,17 @@ fn main() -> std::io::Result<()> {
         let ts = dns_handler::now_millis();
         let peer_ip = peer.ip().to_string();
         let peer_port = peer.port() as i64;
-        let labels = to_lower_labels(&domain);
+
+        let (domain_for_db, domain_validation_error) =
+            match dns_handler::validate_and_sanitize_domain(&domain) {
+                Ok(valid_domain) => (valid_domain, None),
+                Err(err) => {
+                    let sanitized = dns_handler::sanitize_domain_for_logging(&domain);
+                    (sanitized, Some(err))
+                }
+            };
+
+        let labels = to_lower_labels(&domain_for_db);
         let in_zone = dns_handler::strip_zone(&labels, &cfg.zone_labels).is_some();
         let in_mbox_zone = dns_handler::strip_zone(&labels, &cfg.mailbox_zone_labels).is_some();
 
@@ -423,7 +433,7 @@ fn main() -> std::io::Result<()> {
                 ts as i64,
                 &peer_ip,
                 peer_port,
-                &domain,
+                &domain_for_db,
                 qtype as i64,
                 qclass as i64,
                 ((hdr.flags >> 11) & 0x0F) as i64,
@@ -442,12 +452,18 @@ fn main() -> std::io::Result<()> {
             ],
         );
 
-        // Fancy stdout: avoid printing the full domain. For in-zone (dnsm) queries,
-        // try_handle_dnsm prints structured info ([CHUNK], key, ver, remaining, ...).
-        // Here, only print a minimal line for non-zone queries.
-        let labels = to_lower_labels(&domain);
-        let in_zone = dns_handler::strip_zone(&labels, &cfg.zone_labels).is_some();
-        let in_mbox_zone = dns_handler::strip_zone(&labels, &cfg.mailbox_zone_labels).is_some();
+        if let Some(ref validation_err) = domain_validation_error
+            && cfg.pretty_stdout
+        {
+            eprintln!(
+                "{} domain validation failed: {} (original length: {}, sanitized length: {})",
+                style("[VALIDATOR]").red().bold(),
+                validation_err,
+                domain.len(),
+                domain_for_db.len()
+            );
+        }
+
         if cfg.pretty_stdout {
             if in_zone {
                 // Decode the header from the in-zone dnsm query and show a concise summary
@@ -505,7 +521,16 @@ fn main() -> std::io::Result<()> {
         // No tagged-log output anymore; file logs are JSON-only.
 
         if cfg.zone_labels.is_some() {
-            dns_handler::try_handle_dnsm(&domain, &cfg, &mut assemblies, ts, &mut log, peer, &db);
+            // Use validated/sanitized domain to prevent injection attacks
+            dns_handler::try_handle_dnsm(
+                &domain_for_db,
+                &cfg,
+                &mut assemblies,
+                ts,
+                &mut log,
+                peer,
+                &db,
+            );
             recv_count += 1;
             if recv_count.is_multiple_of(200) {
                 let age = gc_ms.unwrap_or_else(|| Duration::from_secs(120).as_millis());

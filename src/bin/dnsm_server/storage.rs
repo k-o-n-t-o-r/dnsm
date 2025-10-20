@@ -6,10 +6,10 @@ const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     message_key INTEGER NOT NULL,
-    mailbox TEXT,
-    data BLOB NOT NULL,
+    mailbox TEXT CHECK(mailbox IS NULL OR length(mailbox) = 12),
+    data BLOB NOT NULL CHECK(length(data) <= 16777216),
     received_at INTEGER NOT NULL,
-    message_id BLOB
+    message_id BLOB CHECK(message_id IS NULL OR length(message_id) = 16)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_mailbox ON messages(mailbox);
 CREATE INDEX IF NOT EXISTS idx_messages_key ON messages(message_key);
@@ -17,13 +17,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_messages_mailbox_msgid
     ON messages(mailbox, message_id)
     WHERE message_id IS NOT NULL;
 
--- Per-query logging table (captures all incoming DNS queries)
 CREATE TABLE IF NOT EXISTS queries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts INTEGER NOT NULL,
-    peer_ip TEXT NOT NULL,
+    peer_ip TEXT NOT NULL CHECK(length(peer_ip) <= 45),
     peer_port INTEGER NOT NULL,
-    domain TEXT NOT NULL,
+    domain TEXT NOT NULL CHECK(length(domain) <= 255),
     qtype INTEGER NOT NULL,
     qclass INTEGER NOT NULL,
     opcode INTEGER NOT NULL,
@@ -32,19 +31,18 @@ CREATE TABLE IF NOT EXISTS queries (
     in_mailbox_zone INTEGER NOT NULL,
     base32_chars INTEGER,
     data_labels INTEGER,
-    decode_error TEXT,
+    decode_error TEXT CHECK(decode_error IS NULL OR length(decode_error) <= 255),
     chunk_first INTEGER,
     chunk_remaining INTEGER,
     chunk_version INTEGER,
     data_len INTEGER,
-    mailbox TEXT,
+    mailbox TEXT CHECK(mailbox IS NULL OR length(mailbox) = 12),
     message_key INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_queries_ts ON queries(ts);
 CREATE INDEX IF NOT EXISTS idx_queries_domain ON queries(domain);
 CREATE INDEX IF NOT EXISTS idx_queries_peer ON queries(peer_ip);
 
--- Convenience views for quick analysis
 CREATE VIEW IF NOT EXISTS v_queries AS
 SELECT
   id,
