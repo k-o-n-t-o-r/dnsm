@@ -215,6 +215,57 @@ pub(crate) fn strip_zone<'a>(
     }
 }
 
+pub(crate) fn has_edns(pkt: &[u8], q_end: usize) -> bool {
+    if pkt.len() < DNS_HEADER_LEN {
+        return false;
+    }
+    let arcount = read_u16(&pkt[10..12]);
+    if arcount == 0 {
+        return false;
+    }
+    let rrcount = read_u16(&pkt[6..8]) as usize + read_u16(&pkt[8..10]) as usize + arcount as usize;
+    let mut off = q_end;
+    for _ in 0..rrcount {
+        loop {
+            if off >= pkt.len() {
+                return false;
+            }
+            let b = pkt[off];
+            if b == 0 {
+                off += 1;
+                break;
+            } else if b & 0xC0 == 0xC0 {
+                off += 2;
+                break;
+            } else {
+                off += 1 + b as usize;
+            }
+        }
+        if off + 10 > pkt.len() {
+            return false;
+        }
+        let rtype = read_u16(&pkt[off..off + 2]);
+        if rtype == 41 {
+            return true;
+        }
+        let rdlen = read_u16(&pkt[off + 8..off + 10]) as usize;
+        off += 10 + rdlen;
+    }
+    false
+}
+
+pub(crate) fn append_opt(resp: &mut Vec<u8>, udp_payload_size: u16) {
+    resp.push(0x00);
+    write_u16(resp, 41);
+    write_u16(resp, udp_payload_size);
+    resp.extend_from_slice(&[0, 0, 0, 0]);
+    write_u16(resp, 0);
+    let ar = read_u16(&resp[10..12]);
+    let new_ar = ar.wrapping_add(1);
+    resp[10] = (new_ar >> 8) as u8;
+    resp[11] = (new_ar & 0xFF) as u8;
+}
+
 pub(crate) fn format_socket(addr: SocketAddr) -> String {
     match addr {
         SocketAddr::V4(v4) => format!("{}:{}", v4.ip(), v4.port()),
@@ -619,13 +670,14 @@ pub(crate) fn try_handle_dnsm(
 
     let sid = message_key;
 
-    if !assemblies.contains_key(&sid) && assemblies.len() >= cfg.max_assemblies
+    if !assemblies.contains_key(&sid)
+        && assemblies.len() >= cfg.max_assemblies
         && let Some((&oldest_sid, _)) = assemblies
             .iter()
             .min_by_key(|(_, assembly)| assembly.last_seen)
-        {
-            assemblies.remove(&oldest_sid);
-        }
+    {
+        assemblies.remove(&oldest_sid);
+    }
 
     let sess = assemblies
         .entry(sid)
@@ -969,5 +1021,92 @@ mod tests {
         let long = "a".repeat(300);
         let truncated = sanitize_domain_for_logging(&long);
         assert_eq!(truncated.len(), 255);
+    }
+
+    fn build_query_with_opt(domain: &str) -> (Vec<u8>, usize) {
+        let mut pkt = Vec::new();
+        write_u16(&mut pkt, 0xABCD); // ID
+        write_u16(&mut pkt, 0x0100); // flags: RD
+        write_u16(&mut pkt, 1); // QDCOUNT
+        write_u16(&mut pkt, 0); // ANCOUNT
+        write_u16(&mut pkt, 0); // NSCOUNT
+        write_u16(&mut pkt, 1); // ARCOUNT = 1 (OPT)
+        for label in domain.split('.') {
+            pkt.push(label.len() as u8);
+            pkt.extend_from_slice(label.as_bytes());
+        }
+        pkt.push(0);
+        write_u16(&mut pkt, 1); // QTYPE = A
+        write_u16(&mut pkt, 1); // QCLASS = IN
+        let q_end = pkt.len();
+        // OPT pseudo-record
+        pkt.push(0x00); // NAME = root
+        write_u16(&mut pkt, 41); // TYPE = OPT
+        write_u16(&mut pkt, 4096); // CLASS = UDP payload size
+        pkt.extend_from_slice(&[0, 0, 0, 0]); // TTL
+        write_u16(&mut pkt, 0); // RDLENGTH
+        (pkt, q_end)
+    }
+
+    #[test]
+    fn has_edns_detects_opt_record() {
+        let (pkt, q_end) = build_query_with_opt("foo.example");
+        assert!(has_edns(&pkt, q_end));
+    }
+
+    #[test]
+    fn has_edns_false_without_opt() {
+        let mut pkt = Vec::new();
+        write_u16(&mut pkt, 0xABCD);
+        write_u16(&mut pkt, 0x0100);
+        write_u16(&mut pkt, 1);
+        write_u16(&mut pkt, 0);
+        write_u16(&mut pkt, 0);
+        write_u16(&mut pkt, 0); // ARCOUNT = 0
+        pkt.extend_from_slice(&[
+            3, b'f', b'o', b'o', 7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 0,
+        ]);
+        write_u16(&mut pkt, 1);
+        write_u16(&mut pkt, 1);
+        let q_end = pkt.len();
+        assert!(!has_edns(&pkt, q_end));
+    }
+
+    #[test]
+    fn has_edns_false_on_short_packet() {
+        assert!(!has_edns(&[0; 4], 4));
+    }
+
+    #[test]
+    fn append_opt_sets_arcount_and_type41() {
+        let mut resp = Vec::new();
+        // Minimal header
+        write_u16(&mut resp, 0xABCD);
+        write_u16(&mut resp, 0x8180);
+        write_u16(&mut resp, 1);
+        write_u16(&mut resp, 0);
+        write_u16(&mut resp, 0);
+        write_u16(&mut resp, 0); // ARCOUNT = 0
+        let before_len = resp.len();
+        append_opt(&mut resp, 512);
+        assert_eq!(read_u16(&resp[10..12]), 1); // ARCOUNT bumped to 1
+        // OPT record: 0x00 (name) + TYPE=41 + CLASS=512 + TTL(4) + RDLEN=0 = 11 bytes
+        assert_eq!(resp.len() - before_len, 11);
+        assert_eq!(resp[before_len], 0x00); // root name
+        assert_eq!(read_u16(&resp[before_len + 1..before_len + 3]), 41);
+        assert_eq!(read_u16(&resp[before_len + 3..before_len + 5]), 512);
+    }
+
+    #[test]
+    fn append_opt_increments_existing_arcount() {
+        let mut resp = Vec::new();
+        write_u16(&mut resp, 0x0001);
+        write_u16(&mut resp, 0x8180);
+        write_u16(&mut resp, 0);
+        write_u16(&mut resp, 0);
+        write_u16(&mut resp, 0);
+        write_u16(&mut resp, 3); // ARCOUNT = 3
+        append_opt(&mut resp, 512);
+        assert_eq!(read_u16(&resp[10..12]), 4);
     }
 }

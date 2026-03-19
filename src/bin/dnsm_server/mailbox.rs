@@ -264,11 +264,14 @@ pub(crate) fn handle_tcp_mailbox_conn(
         let msgs = collect_distinct_mailbox_messages(db, &mb_hex, pivot_ts).unwrap_or_default();
 
         let zone = cfg.mailbox_zone_labels.as_ref().unwrap();
-        let resp = if msgs.is_empty() {
+        let mut resp = if msgs.is_empty() {
             build_negative_nodata_with_soa(&req, hdr, q_end, zone, cfg.neg_ttl)
         } else {
             build_mailbox_txt_response(&req, hdr, q_end, cfg.ans_ttl, &msgs, 32 * 1024, false)
         };
+        if crate::dns_handler::has_edns(&req, q_end) {
+            crate::dns_handler::append_opt(&mut resp, 512);
+        }
         if !cfg.no_response {
             let mut out = Vec::with_capacity(resp.len() + 2);
             out.extend_from_slice(&(resp.len() as u16).to_be_bytes());

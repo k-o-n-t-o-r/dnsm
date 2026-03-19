@@ -130,3 +130,76 @@ fn dig_queries_are_logged() {
     let _ = fs::remove_file(&log_path);
     let _ = fs::remove_file(&db_path);
 }
+
+#[test]
+fn dig_edns_opt_echoed_in_response() {
+    if !have_dig() {
+        eprintln!("skipping dig-based test: 'dig' not installed");
+        return;
+    }
+
+    let server_path = std::env::var("CARGO_BIN_EXE_dnsm_server")
+        .unwrap_or_else(|_| "./target/release/dnsm-server".to_string());
+    if !Path::new(&server_path).exists() {
+        eprintln!(
+            "skipping dig-based test: server binary not found at {}",
+            server_path
+        );
+        return;
+    }
+
+    let port = find_free_udp_port();
+    let bind_addr = format!("127.0.0.1:{}", port);
+
+    let mut log_path = std::env::temp_dir();
+    log_path.push(format!(
+        "dnsm_edns_{}_{}.log",
+        std::process::id(),
+        now_millis()
+    ));
+
+    let mut child = Command::new(server_path)
+        .arg("x.example")
+        .arg("--bind")
+        .arg(&bind_addr)
+        .arg("--respond_with")
+        .arg("203.0.113.77")
+        .arg("--log")
+        .arg(&log_path)
+        .arg("--db")
+        .arg(log_path.with_extension("sqlite"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("launch server");
+
+    thread::sleep(Duration::from_millis(200));
+
+    let output = Command::new("dig")
+        .args([
+            "+edns=0",
+            "+noall",
+            "+comments",
+            "@127.0.0.1",
+            "-p",
+            &port.to_string(),
+            "test.x.example",
+            "A",
+        ])
+        .output()
+        .expect("dig failed");
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // dig prints "EDNS: version: 0" when the response contains an OPT record
+    assert!(
+        stdout.contains("EDNS: version:"),
+        "response should contain OPT record, dig output:\n{}",
+        stdout
+    );
+
+    let _ = fs::remove_file(&log_path);
+    let _ = fs::remove_file(log_path.with_extension("sqlite"));
+}

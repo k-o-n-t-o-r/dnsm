@@ -423,6 +423,8 @@ fn main() -> std::io::Result<()> {
             }
         };
 
+        let query_has_edns = dns_handler::has_edns(pkt, q_end);
+
         // Log the query to SQLite (instead of file)
         let ts = dns_handler::now_millis();
         let peer_ip = peer.ip().to_string();
@@ -677,7 +679,7 @@ fn main() -> std::io::Result<()> {
                     };
 
                     let zone = cfg.mailbox_zone_labels.as_ref().unwrap();
-                    let resp = if msgs.is_empty() {
+                    let mut resp = if msgs.is_empty() {
                         dns_handler::build_negative_nodata_with_soa(
                             pkt,
                             hdr,
@@ -697,6 +699,9 @@ fn main() -> std::io::Result<()> {
                             true,
                         )
                     };
+                    if query_has_edns {
+                        dns_handler::append_opt(&mut resp, 512);
+                    }
                     if !cfg.no_response {
                         let _ = socket.send_to(&resp, peer);
                     }
@@ -717,8 +722,12 @@ fn main() -> std::io::Result<()> {
 
         // Only answer TYPE A (1) and CLASS IN (1)
         let is_a_query = qtype == 1 && qclass == 1;
-        let resp =
+        let mut resp =
             dns_handler::build_response(pkt, hdr, q_end, fixed_ip, is_a_query, in_zone, &cfg);
+
+        if query_has_edns {
+            dns_handler::append_opt(&mut resp, 512);
+        }
 
         // Best-effort send
         if !cfg.no_response {
