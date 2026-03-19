@@ -42,7 +42,7 @@ name = "dnsm"
 crate-type = ["rlib", "cdylib"]
 
 [features]
-default = ["native-cli"]
+default = ["native-cli", "sqlite"]
 
 native-cli = ["dep:clap", "dep:console", "dep:fastrand"]
 
