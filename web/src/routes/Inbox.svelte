@@ -575,6 +575,11 @@
                 <span class="meta-value">
                   <span class="badge">{msg.payload.type}</span>
                 </span>
+                {#if msg.peer_ip}
+                  <span class="meta-sep">•</span>
+                  <span class="meta-label">Peer</span>
+                  <span class="meta-value mono">{msg.peer_ip}</span>
+                {/if}
               </div>
             </div>
           </div>

@@ -637,13 +637,14 @@ pub(crate) fn try_handle_dnsm(
         let sid = compute_message_key48(&data);
         let msg_id = compute_message_id(&data);
         if let Err(e) = db.execute(
-            "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id, peer_ip) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 sid as i64,
                 mailbox.map(|m| format!("{:012x}", (m & 0x0000_FFFF_FFFF_FFFF))),
                 &data,
                 now as i64,
-                &msg_id[..]
+                &msg_id[..],
+                peer.ip().to_string(),
             ],
         ) {
             let _ = writeln!(
@@ -756,13 +757,14 @@ pub(crate) fn try_handle_dnsm(
 
             let msg_id = compute_message_id(&data);
             if let Err(e) = db.execute(
-                "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id, peer_ip) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     sid as i64,
                     sess.mailbox.map(|m| format!("{:012x}", (m & 0x0000_FFFF_FFFF_FFFF))),
                     &data,
                     now as i64,
-                    &msg_id[..]
+                    &msg_id[..],
+                    peer.ip().to_string(),
                 ],
             ) {
                 let _ = writeln!(

@@ -57,6 +57,8 @@ struct ApiMessage {
     mailbox: String,
     data_b64: String,
     received_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    peer_ip: Option<String>,
 }
 
 fn open_readonly_db<P: AsRef<Path>>(p: P) -> rusqlite::Result<Connection> {
@@ -73,7 +75,7 @@ fn open_readonly_db<P: AsRef<Path>>(p: P) -> rusqlite::Result<Connection> {
 fn fetch_all_messages(db: &Connection, mailbox_hex: &str) -> rusqlite::Result<Vec<ApiMessage>> {
     // Newest-first, return only distinct messages by message_id when present, else by bytes.
     let mut stmt = db.prepare(
-        "SELECT id, message_key, mailbox, data, received_at, message_id
+        "SELECT id, message_key, mailbox, data, received_at, message_id, peer_ip
          FROM messages
          WHERE mailbox=?1
          ORDER BY received_at DESC, id DESC",
@@ -85,12 +87,13 @@ fn fetch_all_messages(db: &Connection, mailbox_hex: &str) -> rusqlite::Result<Ve
         let data: Vec<u8> = row.get(3)?;
         let received_at: i64 = row.get(4)?;
         let msg_id: Option<Vec<u8>> = row.get(5)?;
-        Ok((id, message_key, mailbox, data, received_at, msg_id))
+        let peer_ip: Option<String> = row.get(6)?;
+        Ok((id, message_key, mailbox, data, received_at, msg_id, peer_ip))
     })?;
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     let mut out = Vec::new();
     for r in rows {
-        let (id, message_key, mailbox, data, received_at, msg_id) = r?;
+        let (id, message_key, mailbox, data, received_at, msg_id, peer_ip) = r?;
         let key = msg_id.clone().unwrap_or_else(|| data.clone());
         if seen.insert(key) {
             out.push(ApiMessage {
@@ -100,6 +103,7 @@ fn fetch_all_messages(db: &Connection, mailbox_hex: &str) -> rusqlite::Result<Ve
                 mailbox,
                 data_b64: base64::engine::general_purpose::STANDARD.encode(&data),
                 received_at,
+                peer_ip,
             });
         }
     }
@@ -112,7 +116,7 @@ fn fetch_new_messages_after(
     after_id: i64,
 ) -> rusqlite::Result<Vec<ApiMessage>> {
     let mut stmt = db.prepare(
-        "SELECT id, message_key, mailbox, data, received_at, message_id
+        "SELECT id, message_key, mailbox, data, received_at, message_id, peer_ip
          FROM messages
          WHERE mailbox=?1 AND id > ?2
          ORDER BY id ASC",
@@ -124,6 +128,7 @@ fn fetch_new_messages_after(
         let data: Vec<u8> = row.get(3)?;
         let received_at: i64 = row.get(4)?;
         let msg_id: Option<Vec<u8>> = row.get(5)?;
+        let peer_ip: Option<String> = row.get(6)?;
         Ok(ApiMessage {
             id,
             message_key,
@@ -131,6 +136,7 @@ fn fetch_new_messages_after(
             mailbox,
             data_b64: base64::engine::general_purpose::STANDARD.encode(&data),
             received_at,
+            peer_ip,
         })
     })?;
     let mut out = Vec::new();
@@ -343,7 +349,8 @@ mod tests {
                 mailbox TEXT,
                 data BLOB NOT NULL,
                 received_at INTEGER NOT NULL,
-                message_id BLOB
+                message_id BLOB,
+                peer_ip TEXT
             );",
         )
         .unwrap();

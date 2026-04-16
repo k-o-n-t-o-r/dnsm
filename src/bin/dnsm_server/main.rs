@@ -300,6 +300,10 @@ fn main() -> std::io::Result<()> {
         eprintln!("failed to init db schema: {}", e);
         std::process::exit(2);
     }
+    if let Err(e) = storage::run_migrations(&db) {
+        eprintln!("failed to run db migrations: {}", e);
+        std::process::exit(2);
+    }
 
     let cfg = ServerCfg {
         zone_labels,

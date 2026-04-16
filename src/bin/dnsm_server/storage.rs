@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS messages (
     mailbox TEXT CHECK(mailbox IS NULL OR length(mailbox) = 12),
     data BLOB NOT NULL CHECK(length(data) <= 16777216),
     received_at INTEGER NOT NULL,
-    message_id BLOB CHECK(message_id IS NULL OR length(message_id) = 16)
+    message_id BLOB CHECK(message_id IS NULL OR length(message_id) = 16),
+    peer_ip TEXT CHECK(peer_ip IS NULL OR length(peer_ip) <= 45)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_mailbox ON messages(mailbox);
 CREATE INDEX IF NOT EXISTS idx_messages_key ON messages(message_key);
@@ -133,4 +134,16 @@ pub(crate) fn configure_pragmas(db: &Connection) {
 
 pub(crate) fn ensure_schema(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch(SCHEMA_SQL)
+}
+
+pub(crate) fn run_migrations(db: &Connection) -> rusqlite::Result<()> {
+    let has_peer_ip: bool = db
+        .prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name='peer_ip'")?
+        .exists([])?;
+    if !has_peer_ip {
+        db.execute_batch(
+            "ALTER TABLE messages ADD COLUMN peer_ip TEXT CHECK(peer_ip IS NULL OR length(peer_ip) <= 45)",
+        )?;
+    }
+    Ok(())
 }
