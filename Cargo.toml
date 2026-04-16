@@ -1,6 +1,6 @@
 [package]
 name = "dnsm"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 authors = ["Raphael Martin <kontor@dnsm.re>"]
 repository = "https://github.com/k-o-n-t-o-r/dnsm"
@@ -12,17 +12,17 @@ keywords = ["gdpr", "itsec", "security", "exfiltration", "telemetry"]
 
 [dependencies]
 lzma-rust2 = "0.16.2"
-blake3 = { version = "1.8.3" }
+blake3 = { version = "1.8.4" }
 
-clap = { version = "4.6.0", features = [
+clap = { version = "4.6.1", features = [
     "derive",
     "wrap_help",
 ], optional = true }
 console = { version = "0.16.3", optional = true }
-fastrand = { version = "2.3.0", optional = true }
+fastrand = { version = "2.4.1", optional = true }
 
 rusqlite = { version = "0.39.0", features = ["bundled"], optional = true }
-tokio = { version = "1.50.0", features = [
+tokio = { version = "1.52.0", features = [
     "macros",
     "sync",
     "rt-multi-thread",
@@ -59,7 +59,7 @@ ws-server = [
 ]
 
 [dev-dependencies]
-fastrand = "2.3.0"
+fastrand = "2.4.1"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 
 [[bin]]
@@ -84,9 +84,9 @@ codegen-units = 1
 strip = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2.114"
-js-sys = "0.3.91"
-blake3 = { version = "1.8.3", features = ["wasm32_simd"] }
+wasm-bindgen = "0.2.118"
+js-sys = "0.3.95"
+blake3 = { version = "1.8.4", features = ["wasm32_simd"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = "0.3.64"
+wasm-bindgen-test = "0.3.68"
