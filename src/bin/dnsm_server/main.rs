@@ -1,7 +1,7 @@
 use clap::Parser;
 use console::style;
 use dnsm::{
-    CHUNK_HEADER_LEN, ChunkHeader, base32_nopad_decode, to_lower_labels, validate_mailbox_hex12,
+    ChunkHeader, base32_nopad_decode, to_lower_labels, validate_mailbox_hex12,
     validate_zone_and_labels,
 };
 use rusqlite::{Connection, params};
@@ -466,51 +466,52 @@ fn main() -> std::io::Result<()> {
             base32_chars = Some(b32.len() as i64);
             data_labels = Some(labels_in_zone.len() as i64);
             if let Some(bytes) = base32_nopad_decode(&b32) {
-                if bytes.len() < CHUNK_HEADER_LEN {
-                    decode_error = Some("short_bytes".to_string());
-                } else {
-                    let mut hdrb = [0u8; CHUNK_HEADER_LEN];
-                    hdrb.copy_from_slice(&bytes[..CHUNK_HEADER_LEN]);
-                    let ch = ChunkHeader::from_bytes(&hdrb);
+                if let Some((ch, hdr_len)) = ChunkHeader::from_bytes(&bytes) {
                     chunk_first = Some(if ch.is_first { 1 } else { 0 });
                     chunk_remaining = Some(ch.remaining as i64);
                     chunk_version = Some(ch.version as i64);
-                    let mut offset = CHUNK_HEADER_LEN;
+                    let mut offset = hdr_len;
                     let mut message_key: u64 = 0;
-                    if ch.is_first {
-                        if ch.remaining == 0 {
-                            if ch.has_mailbox && bytes.len() >= offset + 6 {
-                                let mut mb = [0u8; 8];
-                                mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-                                let m = u64::from_be_bytes(mb);
-                                mailbox_hex = Some(format!("{:012x}", m & 0x0000_FFFF_FFFF_FFFF));
-                                offset += 6;
-                            }
-                        } else {
-                            if bytes.len() >= offset + 6 {
-                                let mut mid = [0u8; 8];
-                                mid[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-                                message_key = u64::from_be_bytes(mid);
-                                offset += 6;
-                            }
-                            if ch.has_mailbox && bytes.len() >= offset + 6 {
-                                let mut mb = [0u8; 8];
-                                mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-                                let m = u64::from_be_bytes(mb);
-                                mailbox_hex = Some(format!("{:012x}", m & 0x0000_FFFF_FFFF_FFFF));
-                                offset += 6;
-                            }
+                    if ch.is_ping {
+                        // Ping: just mailbox after flags byte
+                        if ch.has_mailbox && bytes.len() >= offset + 6 {
+                            let mut mb = [0u8; 8];
+                            mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
+                            let m = u64::from_be_bytes(mb);
+                            mailbox_hex = Some(format!("{:012x}", m & 0x0000_FFFF_FFFF_FFFF));
+                            offset += 6;
                         }
-                    } else if bytes.len() >= offset + 6 {
-                        let mut mid = [0u8; 8];
-                        mid[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-                        message_key = u64::from_be_bytes(mid);
-                        offset += 6;
+                    } else if !ch.chunked {
+                        // Single-chunk: optional mailbox
+                        if ch.has_mailbox && bytes.len() >= offset + 6 {
+                            let mut mb = [0u8; 8];
+                            mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
+                            let m = u64::from_be_bytes(mb);
+                            mailbox_hex = Some(format!("{:012x}", m & 0x0000_FFFF_FFFF_FFFF));
+                            offset += 6;
+                        }
+                    } else {
+                        // Multi-chunk: msg_id48 + optional mailbox on first
+                        if bytes.len() >= offset + 6 {
+                            let mut mid = [0u8; 8];
+                            mid[2..8].copy_from_slice(&bytes[offset..offset + 6]);
+                            message_key = u64::from_be_bytes(mid);
+                            offset += 6;
+                        }
+                        if ch.is_first && ch.has_mailbox && bytes.len() >= offset + 6 {
+                            let mut mb = [0u8; 8];
+                            mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
+                            let m = u64::from_be_bytes(mb);
+                            mailbox_hex = Some(format!("{:012x}", m & 0x0000_FFFF_FFFF_FFFF));
+                            offset += 6;
+                        }
                     }
                     data_len = Some(bytes.len().saturating_sub(offset) as i64);
                     if message_key != 0 {
                         message_key_i64 = Some(message_key as i64);
                     }
+                } else {
+                    decode_error = Some("short_bytes".to_string());
                 }
             } else {
                 decode_error = Some("invalid_base32".to_string());
@@ -568,8 +569,8 @@ fn main() -> std::io::Result<()> {
                         b32.push_str(lab);
                     }
                     if let Some(bytes) = base32_nopad_decode(&b32) {
-                        if bytes.len() >= CHUNK_HEADER_LEN {
-                            // Decoded successfully; try_handle_dnsm will print [CHUNK].
+                        if ChunkHeader::from_bytes(&bytes).is_some() {
+                            // Decoded successfully; try_handle_dnsm will print [CHUNK] or [PING].
                             // Do not print an extra [QUERY] line.
                         } else {
                             println!(

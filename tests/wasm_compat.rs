@@ -2,34 +2,7 @@
 
 use wasm_bindgen_test::*;
 
-use dnsm::{BuildOptions, build_domains_for_data};
-
-// Default runner is Node.js. To use a browser runner instead, uncomment:
-// wasm_bindgen_test_configure!(run_in_browser);
-
-fn b32_decode(s: &str) -> Vec<u8> {
-    let mut acc: u64 = 0;
-    let mut acc_bits: u32 = 0;
-    let mut out = Vec::with_capacity(s.len() * 5 / 8);
-    for ch in s.chars() {
-        let v: u64 = match ch {
-            'A'..='Z' => (ch as u8 - b'A') as u64,
-            'a'..='z' => (ch as u8 - b'a') as u64,
-            '2'..='7' => 26 + (ch as u8 - b'2') as u64,
-            '=' => continue,
-            _ => 0,
-        };
-        acc = (acc << 5) | v;
-        acc_bits += 5;
-        while acc_bits >= 8 {
-            let shift = acc_bits - 8;
-            out.push(((acc >> shift) & 0xFF) as u8);
-            acc &= (1u64 << shift) - 1;
-            acc_bits -= 8;
-        }
-    }
-    out
-}
+use dnsm::{BuildOptions, ChunkHeader, build_domains_for_data, build_ping_domain, base32_nopad_decode, PROTOCOL_VERSION};
 
 fn strip_zone<'a>(name: &'a str, zone: &str) -> String {
     let mut parts: Vec<&str> = name.split('.').collect();
@@ -41,7 +14,7 @@ fn strip_zone<'a>(name: &'a str, zone: &str) -> String {
 }
 
 #[wasm_bindgen_test]
-fn wasm_single_small_with_mailbox_and_no_session() {
+fn wasm_single_with_mailbox_v2() {
     let zone = "x.foo.bar";
     let opts = BuildOptions {
         mailbox: Some(0xABCD),
@@ -51,20 +24,21 @@ fn wasm_single_small_with_mailbox_and_no_session() {
     let d = &domains[0];
     assert!(d.ends_with(zone));
     assert!(d.len() <= 255);
-    for lab in d.split('.') {
-        assert!(lab.len() <= 63);
-    }
-    let b = b32_decode(&strip_zone(d, zone));
-    assert!(b.len() >= 17);
-    let opts_byte = b[8];
-    assert!(opts_byte & 0x01 != 0); // mailbox
-    assert!(opts_byte & 0x02 != 0); // no-session
+
+    let b32 = strip_zone(d, zone);
+    let bytes = base32_nopad_decode(&b32).expect("valid base32");
+    let (header, hdr_len) = ChunkHeader::from_bytes(&bytes).expect("valid header");
+    assert_eq!(header.version, PROTOCOL_VERSION);
+    assert!(header.is_first);
+    assert!(!header.chunked);
+    assert!(header.has_mailbox);
+    assert!(!header.is_ping);
+    assert_eq!(hdr_len, 1);
 }
 
 #[wasm_bindgen_test]
-fn wasm_multi_chunk_consistency() {
+fn wasm_multi_chunk_v2() {
     let zone = "x.foo.bar";
-    // Random-looking data to avoid extreme LZMA compression and force multiple chunks
     let mut data = vec![0u8; 80_000];
     for i in 0..data.len() {
         data[i] = (i as u8).wrapping_mul(31).wrapping_add(7);
@@ -73,18 +47,32 @@ fn wasm_multi_chunk_consistency() {
     let (domains, info) = build_domains_for_data(&data, zone, &opts).expect("ok");
     assert!(info.total_chunks >= 2);
     assert_eq!(domains.len(), info.total_chunks);
-    let b0 = b32_decode(&strip_zone(&domains[0], zone));
-    let b1 = b32_decode(&strip_zone(&domains[1], zone));
-    let raw0 = u64::from_be_bytes(b0[0..8].try_into().unwrap());
-    let raw1 = u64::from_be_bytes(b1[0..8].try_into().unwrap());
-    let r0 = ((raw0 >> 48) & 0xFFFF) as u16;
-    let r1 = ((raw1 >> 48) & 0xFFFF) as u16;
-    let s0 = (raw0 >> 3) & ((1u64 << 45) - 1);
-    let s1 = (raw1 >> 3) & ((1u64 << 45) - 1);
-    let first0 = (raw0 & 1) != 0;
-    let first1 = (raw1 & 1) == 1; // first1 should be false
-    assert!(first0);
-    assert!(!first1);
-    assert_eq!(s0, s1);
-    assert_eq!(r1 + 1, r0);
+
+    let b0 = base32_nopad_decode(&strip_zone(&domains[0], zone)).unwrap();
+    let b1 = base32_nopad_decode(&strip_zone(&domains[1], zone)).unwrap();
+    let (h0, _) = ChunkHeader::from_bytes(&b0).unwrap();
+    let (h1, _) = ChunkHeader::from_bytes(&b1).unwrap();
+    assert!(h0.is_first);
+    assert!(!h1.is_first);
+    assert!(h0.chunked);
+    assert!(h1.chunked);
+    assert!(h0.has_mailbox);
+    assert_eq!(h1.remaining + 1, h0.remaining);
+}
+
+#[wasm_bindgen_test]
+fn wasm_ping_domain() {
+    let zone = "k.dnsm.re";
+    let domain = build_ping_domain(0x42, zone).expect("ok");
+    assert!(domain.ends_with(zone));
+    assert_eq!(domain.len(), 22);
+
+    let b32 = strip_zone(&domain, zone);
+    let bytes = base32_nopad_decode(&b32).unwrap();
+    let (header, hdr_len) = ChunkHeader::from_bytes(&bytes).unwrap();
+    assert!(header.is_ping);
+    assert!(header.has_mailbox);
+    assert!(!header.chunked);
+    assert_eq!(hdr_len, 1);
+    assert_eq!(bytes.len(), 7);
 }

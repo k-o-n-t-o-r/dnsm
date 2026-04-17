@@ -11,7 +11,7 @@
   let autoReconnect = true;
   let messages = [];
   let status = { text: "Idle", level: "idle" };
-  let host = "ws.dnsm.re";
+  let host = location.hostname === "localhost" || location.hostname === "127.0.0.1" ? "127.0.0.1:8787" : "ws.dnsm.re";
   let mailbox = "";
   let zone = "k.dnsm.re";
   let wasmLoaded = false;
@@ -22,6 +22,9 @@
   let genTimer = null;
   let generatorExpanded = false;
   let digExpanded = false;
+
+  $: parentZone = zone.split('.').slice(1).join('.') || zone;
+  $: mailboxZone = `m.${parentZone}`;
 
   function toggleGenerator() {
     generatorExpanded = !generatorExpanded;
@@ -60,7 +63,10 @@
     return out;
   }
 
-  function decodePayload(b64) {
+  function decodePayload(b64, messageType) {
+    if (messageType === "ping") {
+      return { type: "ping", content: "", raw: "" };
+    }
     try {
       const bin = atob(b64);
       const bytes = new Uint8Array(bin.length);
@@ -71,7 +77,7 @@
         text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
       } catch {}
 
-      const printable = text && /[\x20-\x7E\s]{4,}/.test(text);
+      const printable = text && text.length > 0 && /^[\x09\x0a\x0d\x20-\x7E]*$/.test(text);
       if (text && printable) {
         const trimmed = text.trim();
         if (
@@ -96,22 +102,15 @@
     }
   }
 
-  function createDateFormatter() {
-    try {
-      return new Intl.DateTimeFormat(undefined, {
-        dateStyle: "medium",
-        timeStyle: "medium",
-        timeZoneName: "short",
-      });
-    } catch {
-      return new Intl.DateTimeFormat(undefined, {
-        dateStyle: "medium",
-        timeStyle: "medium",
-      });
-    }
+  function formatDate(date) {
+    const d = String(date.getDate()).padStart(2, "0");
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const y = date.getFullYear();
+    const H = String(date.getHours()).padStart(2, "0");
+    const M = String(date.getMinutes()).padStart(2, "0");
+    const S = String(date.getSeconds()).padStart(2, "0");
+    return `${d}.${m}.${y}, ${H}:${M}:${S}`;
   }
-
-  const dateFormatter = createDateFormatter();
 
   function computeReceivedMeta(value) {
     const numeric = typeof value === "number" ? value : Number(value);
@@ -126,7 +125,7 @@
         value === null || value === undefined ? "Unknown" : String(value);
       return { label: "Unknown time", tooltip: raw };
     }
-    return { label: dateFormatter.format(date), tooltip: date.toISOString() };
+    return { label: formatDate(date), tooltip: date.toISOString() };
   }
 
   function formatReceivedAt(value) {
@@ -209,9 +208,9 @@
     const wsBase = toWsUrl(httpBase);
 
     const backlog = await fetchBacklog(httpBase, mb);
-    messages = backlog.map((m) => ({
+    messages = backlog.reverse().map((m) => ({
       ...m,
-      payload: decodePayload(m.data_b64),
+      payload: decodePayload(m.data_b64, m.message_type),
     }));
 
     try {
@@ -250,7 +249,7 @@
     ws.addEventListener("message", (ev) => {
       try {
         const m = JSON.parse(ev.data);
-        const msg = { ...m, payload: decodePayload(m.data_b64) };
+        const msg = { ...m, payload: decodePayload(m.data_b64, m.message_type) };
         messages = [...messages, msg];
         if (autoscroll) {
           setTimeout(() => {
@@ -369,9 +368,9 @@
   onMount(() => {
     // Apply query params first to get mailbox from URL if present
     applyQueryParams();
-    // If no mailbox was set from query params, generate random one
+    // If no mailbox was set from query params, use a fixed dev mailbox or random
     if (!mailbox) {
-      mailbox = randomMailbox();
+      mailbox = import.meta.env.DEV ? "d00d00d00d00" : randomMailbox();
     }
     // Preload WASM for generator
     loadWasm();
@@ -417,7 +416,7 @@
 
   <section class="panel" aria-label="Connection">
     <div class="controls">
-      <label for="host">Server</label>
+      <label for="host">WebSocket Server</label>
       <input
         id="host"
         type="text"
@@ -546,13 +545,14 @@
   </section>
 
   <section class="stream" id="stream" aria-live="polite">
+    <div class="stream-inner">
     {#if messages.length === 0}
       <div class="empty">
         No messages yet. Send some data via dnsm with mailbox.
       </div>
     {:else}
       {#each messages as msg (msg.id)}
-        <div class="msg">
+        <div class="msg" class:msg-ping={msg.payload.type === "ping"}>
           <div class="row">
             <div class="meta">
               <div class="meta-line">
@@ -573,7 +573,7 @@
                 <span class="meta-sep">•</span>
                 <span class="meta-label">Type</span>
                 <span class="meta-value">
-                  <span class="badge">{msg.payload.type}</span>
+                  <span class="badge" class:badge-ping={msg.payload.type === "ping"}>{msg.payload.type === "ping" ? "Ping" : msg.payload.type}</span>
                 </span>
                 {#if msg.peer_ip}
                   <span class="meta-sep">•</span>
@@ -583,40 +583,43 @@
               </div>
             </div>
           </div>
-          <div class="payload-section">
-            {#if msg.payload.type === "json"}
-              <pre class="payload mono">{msg.payload.content}</pre>
-            {:else if msg.payload.type === "binary"}
-              <pre class="payload mono">{msg.payload.content}</pre>
-            {:else}
-              <div class="payload">{msg.payload.content}</div>
-            {/if}
-            <div class="toolbar" style="margin-top: 8px;">
-              <button
-                on:click={() => copyText(msg.payload.content)}
-                class="iconbtn small"
-                title="Copy as text"
-              >
-                <svg
-                  class="icon"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.7"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
+          {#if msg.payload.type !== "ping"}
+            <div class="payload-section">
+              {#if msg.payload.type === "json"}
+                <pre class="payload mono">{msg.payload.content}</pre>
+              {:else if msg.payload.type === "binary"}
+                <pre class="payload mono">{msg.payload.content}</pre>
+              {:else}
+                <div class="payload">{msg.payload.content}</div>
+              {/if}
+              <div class="toolbar" style="margin-top: 8px;">
+                <button
+                  on:click={() => copyText(msg.payload.content)}
+                  class="iconbtn small"
+                  title="Copy as text"
                 >
-                  <rect x="9" y="9" width="13" height="13" rx="2"></rect>
-                  <path d="M5 15V5a2 2 0 0 1 2-2h10" />
-                </svg>
-                Copy
-              </button>
+                  <svg
+                    class="icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <rect x="9" y="9" width="13" height="13" rx="2"></rect>
+                    <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+                  </svg>
+                  Copy
+                </button>
+              </div>
             </div>
-          </div>
+          {/if}
         </div>
       {/each}
     {/if}
+    </div>
   </section>
 
   {#if mailbox && validateMailbox(mailbox)}
@@ -645,10 +648,10 @@
       {#if digExpanded}
         <div class="dig-content">
           <div class="dig-cmd">
-            <code>dig @dnsm.re -p 53 {mailbox}.m.dnsm.re TXT +tcp +short</code>
+            <code>dig @{parentZone} -p 53 {mailbox}.{mailboxZone} TXT +tcp +short</code>
             <button
               class="dig-copy-btn"
-              on:click={() => copyText(`dig @dnsm.re -p 53 ${mailbox}.m.dnsm.re TXT +tcp +short`)}
+              on:click={() => copyText(`dig @${parentZone} -p 53 ${mailbox}.${mailboxZone} TXT +tcp +short`)}
               title="Copy command"
               aria-label="Copy dig command"
             >
@@ -745,11 +748,15 @@
   }
 
   .stream {
-    display: grid;
-    gap: 12px;
     max-height: 60vh;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+  }
+
+  .stream-inner {
+    display: grid;
+    gap: 12px;
+    padding-right: 8px;
   }
 
   .msg {
@@ -758,6 +765,18 @@
     background: #0b1319;
     padding: 12px 16px;
     box-shadow: inset 0 0 0 1px rgba(16, 27, 36, 0.4);
+  }
+
+  .msg-ping {
+    border-color: rgba(139, 92, 246, 0.35);
+    background: linear-gradient(135deg, #0d0b19 0%, #0b1319 100%);
+    box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.1), 0 0 12px rgba(139, 92, 246, 0.06);
+  }
+
+  .badge-ping {
+    color: #c4b5fd !important;
+    background: rgba(139, 92, 246, 0.15) !important;
+    border-color: rgba(139, 92, 246, 0.3) !important;
   }
 
   .msg .row {

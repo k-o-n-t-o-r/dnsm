@@ -1,54 +1,106 @@
 #![allow(clippy::missing_errors_doc)]
 
-// New compact header (24 bits)
-pub const CHUNK_HEADER_LEN: usize = 3;
+// v2 header: flags byte first, variable length.
+// Flags byte layout:
+//   Bit 7:     is_ping
+//   Bit 6:     chunked   (1 = multi-chunk, remaining field present)
+//   Bit 5:     has_mailbox
+//   Bit 4:     is_first
+//   Bits [3:1] version   (3 bits, currently 2)
+//   Bit 0:     reserved
+//
+// When chunked=false: header is 1 byte (flags only).
+// When chunked=true:  header is 3 bytes (flags + remaining u16 BE).
+
+pub const PROTOCOL_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkHeader {
-    pub remaining: u16,    // 16 bits
-    pub version: u8,       // 4 bits (stored in [7:4])
-    pub is_first: bool,    // 1 bit (bit 3)
-    pub has_mailbox: bool, // 1 bit (bit 2)
+    pub version: u8,       // 3 bits [3:1]
+    pub is_ping: bool,     // bit 7
+    pub chunked: bool,     // bit 6
+    pub has_mailbox: bool, // bit 5
+    pub is_first: bool,    // bit 4
+    pub remaining: u16,    // present on wire only when chunked=true
 }
 
 impl ChunkHeader {
-    pub fn new(remaining: u16, version: u8, is_first: bool, has_mailbox: bool) -> Self {
+    pub fn new(
+        remaining: u16,
+        version: u8,
+        is_first: bool,
+        has_mailbox: bool,
+        chunked: bool,
+        is_ping: bool,
+    ) -> Self {
         Self {
-            remaining,
-            version: version & 0x0F,
-            is_first,
+            version: version & 0x07,
+            is_ping,
+            chunked,
             has_mailbox,
+            is_first,
+            remaining,
         }
     }
 
-    pub fn to_bytes(self) -> [u8; CHUNK_HEADER_LEN] {
-        let mut out = [0u8; CHUNK_HEADER_LEN];
-        out[0] = (self.remaining >> 8) as u8;
-        out[1] = (self.remaining & 0xFF) as u8;
-        let mut b2: u8 = (self.version & 0x0F) << 4;
-        if self.is_first {
-            b2 |= 1 << 3;
+    /// Number of bytes this header occupies on the wire.
+    pub fn header_len(&self) -> usize {
+        if self.chunked { 3 } else { 1 }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut flags: u8 = 0;
+        if self.is_ping {
+            flags |= 1 << 7;
+        }
+        if self.chunked {
+            flags |= 1 << 6;
         }
         if self.has_mailbox {
-            b2 |= 1 << 2;
+            flags |= 1 << 5;
         }
-        // reserved [1:0] = 0
-        out[2] = b2;
+        if self.is_first {
+            flags |= 1 << 4;
+        }
+        flags |= (self.version & 0x07) << 1;
+        let mut out = vec![flags];
+        if self.chunked {
+            out.extend_from_slice(&self.remaining.to_be_bytes());
+        }
         out
     }
 
-    pub fn from_bytes(bytes: &[u8; CHUNK_HEADER_LEN]) -> Self {
-        let remaining = u16::from_be_bytes([bytes[0], bytes[1]]);
-        let b2 = bytes[2];
-        let version = (b2 >> 4) & 0x0F;
-        let is_first = (b2 & 0x08) != 0;
-        let has_mailbox = (b2 & 0x04) != 0;
-        Self {
-            remaining,
-            version,
-            is_first,
-            has_mailbox,
+    /// Decode a header from the start of `bytes`.
+    /// Returns `(header, bytes_consumed)` or `None` if too short.
+    pub fn from_bytes(bytes: &[u8]) -> Option<(Self, usize)> {
+        if bytes.is_empty() {
+            return None;
         }
+        let flags = bytes[0];
+        let is_ping = (flags & 0x80) != 0;
+        let chunked = (flags & 0x40) != 0;
+        let has_mailbox = (flags & 0x20) != 0;
+        let is_first = (flags & 0x10) != 0;
+        let version = (flags >> 1) & 0x07;
+        let (remaining, consumed) = if chunked {
+            if bytes.len() < 3 {
+                return None;
+            }
+            (u16::from_be_bytes([bytes[1], bytes[2]]), 3)
+        } else {
+            (0u16, 1)
+        };
+        Some((
+            Self {
+                version,
+                is_ping,
+                chunked,
+                has_mailbox,
+                is_first,
+                remaining,
+            },
+            consumed,
+        ))
     }
 }
 
@@ -236,9 +288,10 @@ pub fn compute_message_key48(payload: &[u8]) -> u64 {
     u64::from_be_bytes(b)
 }
 
-fn build_domain(header: ChunkHeader, extras: &[u8], data: &[u8], zone_labels: &[String]) -> String {
-    let mut buf = Vec::with_capacity(CHUNK_HEADER_LEN + extras.len() + data.len());
-    buf.extend_from_slice(&header.to_bytes());
+fn build_domain(header: &ChunkHeader, extras: &[u8], data: &[u8], zone_labels: &[String]) -> String {
+    let hdr_bytes = header.to_bytes();
+    let mut buf = Vec::with_capacity(hdr_bytes.len() + extras.len() + data.len());
+    buf.extend_from_slice(&hdr_bytes);
     buf.extend_from_slice(extras);
     buf.extend_from_slice(data);
     let enc = base32_nopad_encode(&buf);
@@ -252,7 +305,6 @@ fn build_domain(header: ChunkHeader, extras: &[u8], data: &[u8], zone_labels: &[
 
 #[derive(Default)]
 pub struct BuildOptions {
-    // mailbox is 48-bit when present; API keeps u64 and masks to 48 bits
     pub mailbox: Option<u64>,
 }
 
@@ -260,7 +312,7 @@ pub struct BuildInfo {
     pub total_chunks: usize,
     pub first_payload_len: usize,
     pub payload_per_chunk: usize,
-    pub msg_id48: Option<u64>, // present for multi-chunk
+    pub msg_id48: Option<u64>,
 }
 
 fn compress_lzma(data: &[u8]) -> Vec<u8> {
@@ -275,15 +327,19 @@ fn compress_lzma(data: &[u8]) -> Vec<u8> {
 
 pub fn build_domains_for_payload(payload: &[u8], zone: &str) -> Result<Vec<String>, String> {
     let zone_labels = validate_zone_and_labels(zone)?;
-    // Non-first and first of multi include msg_id48 (6 bytes)
-    let base_payload_len = compute_payload_capacity(&zone_labels, CHUNK_HEADER_LEN + 6);
+    let multi_chunk_overhead = 3 + 6;
+    let base_payload_len = compute_payload_capacity(&zone_labels, multi_chunk_overhead);
     if base_payload_len == 0 {
         return Err("zone too long to fit any payload".to_string());
     }
-    let version: u8 = 1; // new protocol version
 
-    // Single-chunk first header is only 3 bytes (no msg_id, no mailbox)
-    let first_payload_len = compute_payload_capacity(&zone_labels, CHUNK_HEADER_LEN);
+    let first_single_len = compute_payload_capacity(&zone_labels, 1);
+    let first_multi_len = compute_payload_capacity(&zone_labels, multi_chunk_overhead);
+    let first_payload_len = if payload.len() <= first_single_len {
+        first_single_len
+    } else {
+        first_multi_len
+    };
     let total_chunks = if payload.len() <= first_payload_len {
         1
     } else {
@@ -298,6 +354,7 @@ pub fn build_domains_for_payload(payload: &[u8], zone: &str) -> Result<Vec<Strin
     let mut sent = 0usize;
     for i in 0..total_chunks {
         let is_first = i == 0;
+        let is_single = total_chunks == 1;
         let cap = if is_first {
             first_payload_len
         } else {
@@ -306,14 +363,22 @@ pub fn build_domains_for_payload(payload: &[u8], zone: &str) -> Result<Vec<Strin
         let end = usize::min(sent + cap, payload.len());
         let data = &payload[sent..end];
         let remaining: u16 = (rmax as usize - i) as u16;
-        let header = ChunkHeader::new(remaining, version, is_first, false);
-        let extras: Vec<u8> = if total_chunks == 1 || !is_first {
-            Vec::new()
-        } else {
+        let header = ChunkHeader::new(
+            remaining,
+            PROTOCOL_VERSION,
+            is_first,
+            false,
+            !is_single,
+            false,
+        );
+        let extras: Vec<u8> = if !is_single && is_first {
             vec![0; 6]
+        } else if !is_single {
+            vec![0; 6]
+        } else {
+            Vec::new()
         };
-        // For build_domains_for_payload (raw payload, no mailbox, and no msg_id computation), we only add msg_id space for multi-first
-        let domain = build_domain(header, &extras, data, &zone_labels);
+        let domain = build_domain(&header, &extras, data, &zone_labels);
         out.push(domain);
         sent = end;
     }
@@ -328,16 +393,17 @@ pub fn build_domains_for_data(
 ) -> Result<(Vec<String>, BuildInfo), String> {
     let compressed = compress_lzma(data);
     let zone_labels = validate_zone_and_labels(zone)?;
-    // Non-first and first of multi include msg_id48 (6 bytes)
-    let payload_len = compute_payload_capacity(&zone_labels, CHUNK_HEADER_LEN + 6);
+    let has_mailbox = opts.mailbox.is_some();
+
+    let multi_nonfirst_overhead = 3 + 6;
+    let payload_len = compute_payload_capacity(&zone_labels, multi_nonfirst_overhead);
     if payload_len == 0 {
         return Err("zone too long to fit any payload".to_string());
     }
-    let has_mailbox = opts.mailbox.is_some();
-    // First single: header + optional 6-byte mailbox.
-    let first_single_overhead = CHUNK_HEADER_LEN + if has_mailbox { 6 } else { 0 };
+
+    let first_single_overhead = 1 + if has_mailbox { 6 } else { 0 };
     let first_single_len = compute_payload_capacity(&zone_labels, first_single_overhead);
-    let first_multi_overhead = CHUNK_HEADER_LEN + 6 + if has_mailbox { 6 } else { 0 };
+    let first_multi_overhead = 3 + 6 + if has_mailbox { 6 } else { 0 };
     let first_multi_len = compute_payload_capacity(&zone_labels, first_multi_overhead);
     let first_payload_len = if compressed.len() <= first_single_len {
         first_single_len
@@ -354,9 +420,7 @@ pub fn build_domains_for_data(
     } else {
         (total_chunks - 1) as u16
     };
-    let version: u8 = 1;
     let mailbox48 = opts.mailbox.map(|v| v & 0x0000_FFFF_FFFF_FFFF);
-    // Compute message_id48 from uncompressed data for multi-chunk cases
     let msg_id48: Option<u64> = if total_chunks > 1 {
         Some(compute_message_key48(data))
     } else {
@@ -367,33 +431,42 @@ pub fn build_domains_for_data(
     let mut sent = 0usize;
     for i in 0..total_chunks {
         let is_first = i == 0;
+        let is_single = total_chunks == 1;
         let cap = if is_first {
             first_payload_len
         } else {
             payload_len
         };
         let end = usize::min(sent + cap, compressed.len());
-        let data = &compressed[sent..end];
+        let chunk_data = &compressed[sent..end];
         let remaining: u16 = (rmax as usize - i) as u16;
-        let header = ChunkHeader::new(remaining, version, is_first, mailbox48.is_some());
+        let header = ChunkHeader::new(
+            remaining,
+            PROTOCOL_VERSION,
+            is_first,
+            mailbox48.is_some(),
+            !is_single,
+            false,
+        );
         let mut extras: Vec<u8> = Vec::new();
-        if total_chunks > 1 {
+        if !is_single {
             if let Some(mid) = msg_id48 {
                 let b = mid.to_be_bytes();
                 extras.extend_from_slice(&b[2..8]);
             }
-            if is_first && let Some(mb) = mailbox48 {
-                let bb = mb.to_be_bytes();
-                extras.extend_from_slice(&bb[2..8]);
+            if is_first {
+                if let Some(mb) = mailbox48 {
+                    let bb = mb.to_be_bytes();
+                    extras.extend_from_slice(&bb[2..8]);
+                }
             }
         } else {
-            // single-chunk: include mailbox if present
             if let Some(mb) = mailbox48 {
                 let bb = mb.to_be_bytes();
                 extras.extend_from_slice(&bb[2..8]);
             }
         }
-        let domain = build_domain(header, &extras, data, &zone_labels);
+        let domain = build_domain(&header, &extras, chunk_data, &zone_labels);
         out.push(domain);
         sent = end;
     }
@@ -409,10 +482,24 @@ pub fn build_domains_for_data(
     ))
 }
 
+pub fn build_ping_domain(mailbox: u64, zone: &str) -> Result<String, String> {
+    let zone_labels = validate_zone_and_labels(zone)?;
+    let header = ChunkHeader::new(0, PROTOCOL_VERSION, true, true, false, true);
+    let mb = (mailbox & 0x0000_FFFF_FFFF_FFFF).to_be_bytes();
+    let domain = build_domain(&header, &mb[2..8], &[], &zone_labels);
+    let wire_len: usize = domain.len() + 2; // +1 length prefix for first label, +1 root null
+    if wire_len > 255 {
+        return Err(format!(
+            "ping domain exceeds DNS 255-byte wire limit ({wire_len} bytes)"
+        ));
+    }
+    Ok(domain)
+}
+
 // ---------------- wasm-bindgen JS API ----------------
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {
-    use super::{BuildOptions, build_domains_for_data};
+    use super::{BuildOptions, build_domains_for_data, build_ping_domain};
     use js_sys::Array;
     use wasm_bindgen::prelude::*;
 
@@ -425,6 +512,23 @@ mod wasm_api {
                 arr.push(&JsValue::from(s));
                 arr
             }),
+            Err(e) => wasm_bindgen::throw_str(&e),
+        }
+    }
+
+    /// Returns a single ping domain for the given mailbox (exactly 12 hex chars, no 0x).
+    #[wasm_bindgen]
+    pub fn ping_domain(mailbox_str: &str, zone: &str) -> String {
+        fn parse_hex12(v: &str) -> Result<u64, String> {
+            let s = v.trim();
+            if s.len() != 12 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err("mailbox must be exactly 12 hex chars".to_string());
+            }
+            u64::from_str_radix(s, 16).map_err(|_| "bad hex".to_string())
+        }
+        let mailbox = parse_hex12(mailbox_str).unwrap_or_else(|e| wasm_bindgen::throw_str(&e));
+        match build_ping_domain(mailbox, zone) {
+            Ok(d) => d,
             Err(e) => wasm_bindgen::throw_str(&e),
         }
     }

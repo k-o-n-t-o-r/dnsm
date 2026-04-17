@@ -145,5 +145,13 @@ pub(crate) fn run_migrations(db: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE messages ADD COLUMN peer_ip TEXT CHECK(peer_ip IS NULL OR length(peer_ip) <= 45)",
         )?;
     }
+    let has_message_type: bool = db
+        .prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name='message_type'")?
+        .exists([])?;
+    if !has_message_type {
+        db.execute_batch(
+            "ALTER TABLE messages ADD COLUMN message_type TEXT DEFAULT 'message' CHECK(message_type IS NULL OR message_type IN ('message', 'ping'))",
+        )?;
+    }
     Ok(())
 }

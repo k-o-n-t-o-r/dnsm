@@ -1,6 +1,6 @@
 use console::style;
 use dnsm::{
-    CHUNK_HEADER_LEN, ChunkHeader, base32_nopad_decode, compute_message_id, compute_message_key48,
+    ChunkHeader, base32_nopad_decode, compute_message_id, compute_message_key48,
     to_lower_labels,
 };
 use rusqlite::{Connection, params};
@@ -477,7 +477,7 @@ pub(crate) fn try_handle_dnsm(
         }
     };
 
-    if bytes.len() < 8 {
+    if bytes.is_empty() {
         let _ = writeln!(
             log,
             "{{\"ts\":{},\"event\":\"decode_error\",\"reason\":\"short_bytes\",\"len\":{},\"domain\":\"{}\",\"peer\":\"{}\"}}",
@@ -500,45 +500,92 @@ pub(crate) fn try_handle_dnsm(
         return;
     }
 
-    let mut hdr = [0u8; CHUNK_HEADER_LEN];
-    hdr.copy_from_slice(&bytes[..CHUNK_HEADER_LEN]);
-    let header = ChunkHeader::from_bytes(&hdr);
+    let (header, hdr_len) = match ChunkHeader::from_bytes(&bytes) {
+        Some(v) => v,
+        None => return,
+    };
     if header.version == 0 {
+        eprintln!("[dnsm] dropping v1 query from {}", format_socket(peer));
         return;
     }
-    let mut offset = CHUNK_HEADER_LEN;
+    let mut offset = hdr_len;
     let mut mailbox: Option<u64> = None;
     let mut message_key: u64 = 0;
-    if header.is_first {
-        if header.remaining == 0 {
-            if header.has_mailbox {
-                if bytes.len() < offset + 6 {
-                    return;
-                }
-                let mut mb = [0u8; 8];
-                mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-                mailbox = Some(u64::from_be_bytes(mb));
-                offset += 6;
-            }
-        } else {
+
+    // --- Ping handling ---
+    if header.is_ping {
+        if !header.has_mailbox {
+            return; // ping without mailbox is invalid
+        }
+        if bytes.len() < offset + 6 {
+            return;
+        }
+        let mut mb = [0u8; 8];
+        mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
+        let mbox = u64::from_be_bytes(mb) & 0x0000_FFFF_FFFF_FFFF;
+        let mbox_hex = format!("{:012x}", mbox);
+
+        // Compute ping-specific message_id: BLAKE3("ping" || mailbox || peer_ip || now_ms)
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"ping");
+        hasher.update(&mb[2..8]);
+        hasher.update(peer.ip().to_string().as_bytes());
+        hasher.update(&(now as u64).to_be_bytes());
+        let hash = hasher.finalize();
+        let msg_id: [u8; 16] = hash.as_bytes()[..16].try_into().unwrap();
+
+        if let Err(e) = db.execute(
+            "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id, peer_ip, message_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                0i64,
+                &mbox_hex,
+                &[] as &[u8],
+                now as i64,
+                &msg_id[..],
+                peer.ip().to_string(),
+                "ping",
+            ],
+        ) {
+            let _ = writeln!(
+                log,
+                "{{\"ts\":{},\"event\":\"db_error\",\"op\":\"insert_ping\",\"err\":\"{}\"}}",
+                now,
+                json_escape(&e.to_string())
+            );
+        }
+        let _ = writeln!(
+            log,
+            "{{\"ts\":{},\"event\":\"ping\",\"mailbox\":\"{}\",\"peer\":\"{}\"}}",
+            now,
+            mbox_hex,
+            json_escape(&format_socket(peer))
+        );
+        let _ = log.flush();
+        if cfg.pretty_stdout {
+            println!(
+                "{} mbox={} peer={}",
+                style("[PING]").magenta().bold(),
+                style(&mbox_hex).cyan(),
+                style(format_socket(peer)).magenta()
+            );
+        }
+        return;
+    }
+
+    // --- Normal message header field extraction ---
+    if !header.chunked {
+        // Single-chunk message
+        if header.has_mailbox {
             if bytes.len() < offset + 6 {
                 return;
             }
-            let mut mid = [0u8; 8];
-            mid[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-            message_key = u64::from_be_bytes(mid);
+            let mut mb = [0u8; 8];
+            mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
+            mailbox = Some(u64::from_be_bytes(mb));
             offset += 6;
-            if header.has_mailbox {
-                if bytes.len() < offset + 6 {
-                    return;
-                }
-                let mut mb = [0u8; 8];
-                mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-                mailbox = Some(u64::from_be_bytes(mb));
-                offset += 6;
-            }
         }
     } else {
+        // Multi-chunk message: msg_id48 always present
         if bytes.len() < offset + 6 {
             return;
         }
@@ -546,6 +593,15 @@ pub(crate) fn try_handle_dnsm(
         mid[2..8].copy_from_slice(&bytes[offset..offset + 6]);
         message_key = u64::from_be_bytes(mid);
         offset += 6;
+        if header.is_first && header.has_mailbox {
+            if bytes.len() < offset + 6 {
+                return;
+            }
+            let mut mb = [0u8; 8];
+            mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
+            mailbox = Some(u64::from_be_bytes(mb));
+            offset += 6;
+        }
     }
 
     let data_len = bytes.len().saturating_sub(offset);
@@ -569,7 +625,9 @@ pub(crate) fn try_handle_dnsm(
         } else {
             String::new()
         };
-        let last_tag = if header.remaining == 0 {
+        let last_tag = if header.remaining == 0 && !header.chunked {
+            format!(" {}", style("[single]").cyan().bold())
+        } else if header.remaining == 0 {
             format!(" {}", style("[last]").cyan().bold())
         } else {
             String::new()
@@ -597,7 +655,8 @@ pub(crate) fn try_handle_dnsm(
         );
     }
 
-    if header.is_first && header.remaining == 0 {
+    // --- Single-chunk message ---
+    if !header.chunked {
         let data = match decompress_lzma_mem(&bytes[offset..], cfg.max_decompressed_bytes) {
             Ok(v) => v,
             Err(err) => {
@@ -637,7 +696,7 @@ pub(crate) fn try_handle_dnsm(
         let sid = compute_message_key48(&data);
         let msg_id = compute_message_id(&data);
         if let Err(e) = db.execute(
-            "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id, peer_ip) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id, peer_ip, message_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 sid as i64,
                 mailbox.map(|m| format!("{:012x}", (m & 0x0000_FFFF_FFFF_FFFF))),
@@ -645,6 +704,7 @@ pub(crate) fn try_handle_dnsm(
                 now as i64,
                 &msg_id[..],
                 peer.ip().to_string(),
+                "message",
             ],
         ) {
             let _ = writeln!(
@@ -757,7 +817,7 @@ pub(crate) fn try_handle_dnsm(
 
             let msg_id = compute_message_id(&data);
             if let Err(e) = db.execute(
-                "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id, peer_ip) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id, peer_ip, message_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     sid as i64,
                     sess.mailbox.map(|m| format!("{:012x}", (m & 0x0000_FFFF_FFFF_FFFF))),
@@ -765,6 +825,7 @@ pub(crate) fn try_handle_dnsm(
                     now as i64,
                     &msg_id[..],
                     peer.ip().to_string(),
+                    "message",
                 ],
             ) {
                 let _ = writeln!(

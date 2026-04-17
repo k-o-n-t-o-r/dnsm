@@ -1,6 +1,6 @@
 use clap::{ArgAction, Parser};
 use console::style;
-use dnsm::{BuildInfo, BuildOptions, build_domains_for_data};
+use dnsm::{BuildInfo, BuildOptions, build_domains_for_data, build_ping_domain};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::net::{Ipv6Addr, UdpSocket};
@@ -52,6 +52,10 @@ struct ClientArgs {
     /// Generate a random mailbox ID (conflicts with --mailbox)
     #[arg(long = "random-mailbox", action = ArgAction::SetTrue, conflicts_with = "mailbox")]
     random_mailbox: bool,
+
+    /// Send a minimal ping (no message content, mailbox required)
+    #[arg(long = "ping", action = ArgAction::SetTrue)]
+    ping: bool,
 
     /// Verbose progress to stderr
     #[arg(long = "debug", action = ArgAction::SetTrue)]
@@ -166,6 +170,7 @@ fn main() -> io::Result<()> {
         sent_log,
         mailbox: mailbox_arg,
         random_mailbox,
+        ping,
         debug,
         pretty_stdout,
         no_color,
@@ -184,10 +189,6 @@ fn main() -> io::Result<()> {
         mailbox_arg
     };
 
-    // Read stdin
-    let mut stdin = Vec::new();
-    io::stdin().read_to_end(&mut stdin)?;
-    // Build domains using shared library (handles LZMA + mailbox + sizing)
     let mailbox_u64: Option<u64> = match mailbox_hex.as_deref() {
         None => None,
         Some(s) => match u64::from_str_radix(s, 16) {
@@ -202,11 +203,99 @@ fn main() -> io::Result<()> {
         },
     };
 
+    // --- Ping mode ---
+    if ping {
+        let mb = match mailbox_u64 {
+            Some(v) => v,
+            None => {
+                eprintln!("dnsm-client: --ping requires --mailbox or --random-mailbox");
+                std::process::exit(2);
+            }
+        };
+        let domain = match build_ping_domain(mb, &zone) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("dnsm-client: {}", e);
+                std::process::exit(2);
+            }
+        };
+        eprintln!(
+            "dnsm-client: zone={} ping mailbox={}",
+            zone,
+            mailbox_hex.as_deref().unwrap_or("?")
+        );
+        if dont_query {
+            println!("{}", domain);
+        } else {
+            let target_host = if let Some(ref addr) = resolver_ip {
+                Some(addr.clone())
+            } else {
+                parse_system_resolver()
+            };
+            if let Some(host) = target_host {
+                let target = to_target_addr(&host);
+                let s = UdpSocket::bind("0.0.0.0:0")?;
+                s.connect(&target)
+                    .map_err(|e| io::Error::other(format!("connect {}: {}", target, e)))?;
+                if await_reply_ms > 0 {
+                    s.set_read_timeout(Some(std::time::Duration::from_millis(await_reply_ms)))?;
+                }
+                let q = build_query_from_domain(&domain);
+                let id = u16::from_be_bytes([q[0], q[1]]);
+                s.send(&q)?;
+                if pretty_stdout {
+                    println!(
+                        "{} ping {} id={}",
+                        style("[SEND]").green().bold(),
+                        domain,
+                        id
+                    );
+                }
+                if await_reply_ms > 0 {
+                    let mut buf = [0u8; 512];
+                    match s.recv(&mut buf) {
+                        Ok(n) if n >= 2 => {
+                            let rid = u16::from_be_bytes([buf[0], buf[1]]);
+                            if rid == id && pretty_stdout {
+                                println!("{} id={}", style("[ACK]").green().bold(), id);
+                            }
+                        }
+                        _ => {
+                            if pretty_stdout {
+                                println!(
+                                    "{} id={} after={}ms",
+                                    style("[TIMEOUT]").yellow().bold(),
+                                    id,
+                                    await_reply_ms
+                                );
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Fallback: just print
+                println!("{}", domain);
+            }
+        }
+        return Ok(());
+    }
+
+    // --- Normal message mode ---
+    let mut stdin_data = Vec::new();
+    io::stdin().read_to_end(&mut stdin_data)?;
+
+    if let Ok(s) = std::str::from_utf8(&stdin_data) {
+        let trimmed = s.trim_end();
+        if trimmed.len() != stdin_data.len() {
+            stdin_data.truncate(trimmed.len());
+        }
+    }
+
     let opts = BuildOptions {
         mailbox: mailbox_u64,
     };
     let (domains, info): (Vec<String>, BuildInfo) =
-        match build_domains_for_data(&stdin, &zone, &opts) {
+        match build_domains_for_data(&stdin_data, &zone, &opts) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("dnsm-client: {}", e);

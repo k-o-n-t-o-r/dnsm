@@ -103,7 +103,7 @@ pub(crate) fn collect_distinct_mailbox_messages(
 ) -> rusqlite::Result<Vec<Vec<u8>>> {
     let mailbox_key = mb_hex.to_ascii_lowercase();
     let mut rows_sql = String::from(
-        "SELECT message_key, data, received_at, message_id FROM messages WHERE mailbox = ?1",
+        "SELECT message_key, data, received_at, message_id FROM messages WHERE mailbox = ?1 AND (message_type IS NULL OR message_type = 'message')",
     );
     if pivot_ts.is_some() {
         rows_sql.push_str(" AND received_at < ?2");

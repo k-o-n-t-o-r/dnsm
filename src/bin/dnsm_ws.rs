@@ -59,6 +59,7 @@ struct ApiMessage {
     received_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     peer_ip: Option<String>,
+    message_type: String,
 }
 
 fn open_readonly_db<P: AsRef<Path>>(p: P) -> rusqlite::Result<Connection> {
@@ -72,14 +73,22 @@ fn open_readonly_db<P: AsRef<Path>>(p: P) -> rusqlite::Result<Connection> {
 
 // Use the shared library mailbox validator
 
+fn has_message_type_column(db: &Connection) -> bool {
+    db.prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name='message_type'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false)
+}
+
 fn fetch_all_messages(db: &Connection, mailbox_hex: &str) -> rusqlite::Result<Vec<ApiMessage>> {
-    // Newest-first, return only distinct messages by message_id when present, else by bytes.
-    let mut stmt = db.prepare(
-        "SELECT id, message_key, mailbox, data, received_at, message_id, peer_ip
-         FROM messages
-         WHERE mailbox=?1
-         ORDER BY received_at DESC, id DESC",
-    )?;
+    let has_mt = has_message_type_column(db);
+    let sql = if has_mt {
+        "SELECT id, message_key, mailbox, data, received_at, message_id, peer_ip, message_type
+         FROM messages WHERE mailbox=?1 ORDER BY received_at DESC, id DESC"
+    } else {
+        "SELECT id, message_key, mailbox, data, received_at, message_id, peer_ip, NULL
+         FROM messages WHERE mailbox=?1 ORDER BY received_at DESC, id DESC"
+    };
+    let mut stmt = db.prepare(sql)?;
     let rows = stmt.query_map(params![mailbox_hex], |row| {
         let id: i64 = row.get(0)?;
         let message_key: i64 = row.get(1)?;
@@ -88,12 +97,13 @@ fn fetch_all_messages(db: &Connection, mailbox_hex: &str) -> rusqlite::Result<Ve
         let received_at: i64 = row.get(4)?;
         let msg_id: Option<Vec<u8>> = row.get(5)?;
         let peer_ip: Option<String> = row.get(6)?;
-        Ok((id, message_key, mailbox, data, received_at, msg_id, peer_ip))
+        let message_type: Option<String> = row.get(7)?;
+        Ok((id, message_key, mailbox, data, received_at, msg_id, peer_ip, message_type))
     })?;
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     let mut out = Vec::new();
     for r in rows {
-        let (id, message_key, mailbox, data, received_at, msg_id, peer_ip) = r?;
+        let (id, message_key, mailbox, data, received_at, msg_id, peer_ip, message_type) = r?;
         let key = msg_id.clone().unwrap_or_else(|| data.clone());
         if seen.insert(key) {
             out.push(ApiMessage {
@@ -104,6 +114,7 @@ fn fetch_all_messages(db: &Connection, mailbox_hex: &str) -> rusqlite::Result<Ve
                 data_b64: base64::engine::general_purpose::STANDARD.encode(&data),
                 received_at,
                 peer_ip,
+                message_type: message_type.unwrap_or_else(|| "message".to_string()),
             });
         }
     }
@@ -115,12 +126,15 @@ fn fetch_new_messages_after(
     mailbox_hex: &str,
     after_id: i64,
 ) -> rusqlite::Result<Vec<ApiMessage>> {
-    let mut stmt = db.prepare(
-        "SELECT id, message_key, mailbox, data, received_at, message_id, peer_ip
-         FROM messages
-         WHERE mailbox=?1 AND id > ?2
-         ORDER BY id ASC",
-    )?;
+    let has_mt = has_message_type_column(db);
+    let sql = if has_mt {
+        "SELECT id, message_key, mailbox, data, received_at, message_id, peer_ip, message_type
+         FROM messages WHERE mailbox=?1 AND id > ?2 ORDER BY id ASC"
+    } else {
+        "SELECT id, message_key, mailbox, data, received_at, message_id, peer_ip, NULL
+         FROM messages WHERE mailbox=?1 AND id > ?2 ORDER BY id ASC"
+    };
+    let mut stmt = db.prepare(sql)?;
     let rows = stmt.query_map(params![mailbox_hex, after_id], |row| {
         let id: i64 = row.get(0)?;
         let message_key: i64 = row.get(1)?;
@@ -129,6 +143,7 @@ fn fetch_new_messages_after(
         let received_at: i64 = row.get(4)?;
         let msg_id: Option<Vec<u8>> = row.get(5)?;
         let peer_ip: Option<String> = row.get(6)?;
+        let message_type: Option<String> = row.get(7)?;
         Ok(ApiMessage {
             id,
             message_key,
@@ -137,6 +152,7 @@ fn fetch_new_messages_after(
             data_b64: base64::engine::general_purpose::STANDARD.encode(&data),
             received_at,
             peer_ip,
+            message_type: message_type.unwrap_or_else(|| "message".to_string()),
         })
     })?;
     let mut out = Vec::new();
@@ -350,7 +366,8 @@ mod tests {
                 data BLOB NOT NULL,
                 received_at INTEGER NOT NULL,
                 message_id BLOB,
-                peer_ip TEXT
+                peer_ip TEXT,
+                message_type TEXT DEFAULT 'message'
             );",
         )
         .unwrap();

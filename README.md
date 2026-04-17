@@ -184,7 +184,12 @@ Options:
           Log progress every n unique chunks (n > 0)
 
       --gc-ms <MS>
-          Garbage-collect inactive assemblies older than this many ms
+          Garbage-collect inactive assemblies older than this many ms (default: 30000ms = 30s)
+
+      --max-assemblies <COUNT>
+          Maximum concurrent assembly sessions (prevents memory exhaustion, default: 10_000)
+
+          [default: 10000]
 
       --ans-ttl <SEC>
           TTL for A-record answers (default: 0)
@@ -204,6 +209,18 @@ Options:
 
       --no-response
           Process queries but send no responses when enabled
+
+      --max-decompressed-bytes <BYTES>
+          Maximum decompressed payload size in bytes (default: 12582912 = 12MB). Prevents
+          decompression bomb attacks. Set to 0 to disable limit (unsafe)
+
+          [default: 12582912]
+
+      --rate-limit-qps <QPS>
+          Maximum queries per second per IP address. Set to 0 to disable rate limiting. Aims to
+          prevent UDP amplification/reflection attacks. Default: 100 qps
+
+          [default: 100]
 
   -h, --help
           Print help (see a summary with '-h')
@@ -262,6 +279,9 @@ Options:
   -p, --pretty
           Print send progress to stdout with colors (does not affect --dont-query output)
 
+      --ping
+          Send a minimal ping (no message content, mailbox required)
+
       --no-color
           Disable ANSI colors even when --pretty is used
 
@@ -283,6 +303,7 @@ The JS client is generated via `wasm-bindgen` and exposes helpers to turn bytes/
 import init, {
   domains_for_string,
   domains_for_string_with_mailbox,
+  ping_domain,
 } from "./web/src/lib/pkg-web/dnsm.js"; // path to generated pkg
 
 await init(); // loads dnsm_bg.wasm next to dnsm.js
@@ -299,6 +320,9 @@ const domainsWithMbx = Array.from(
   domains_for_string_with_mailbox(msg, zone, mailbox)
 );
 
+// Ping (minimal keepalive, no message content)
+const pingHost = ping_domain(mailbox, zone);
+
 // Optionally trigger DNS resolution in the browser (example method)
 for (const h of domainsWithMbx) new Image().src = "https://" + h;
 ```
@@ -308,6 +332,7 @@ See [BrowserTest.svelte](web/src/routes/BrowserTest.svelte) for many in-browser 
 Notes:
 
 - The functions return arrays of domain names (strings) that encode your data.
+- `ping_domain` returns a single domain name for a content-less keepalive query.
 - The same compression, chunking, and mailbox behavior as the CLI is used under the hood.
 - For Node/bundlers, you can also import from the `pkg/` directory produced by the wasm build.
 
@@ -344,13 +369,14 @@ assert!(info.total_chunks >= 1);
 
 ## Protocol Header
 
-| Section                 | Wire Format                                                                                                                                 | Notes                                                                                                                                                                              |
-| :---------------------- | :------------------------------------------------------------------------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Envelope**            | LZMA input → chunk framing (`header + extras + payload`) → base32 labels (lowercase, no padding).                                           | Each label ≤ 63 bytes. Suffix the labels with the validated zone so the full QNAME stays under 255 bytes on the wire.                                                              |
-| **Chunk Header**        | 24-bit big-endian layout `[remaining:16][version:4][first:1][has_mailbox:1][reserved:2]`.                                                   | `remaining` counts chunks left after this one (0 on the final chunk); `version = 0x1`; `first` marks the opener; `has_mailbox` toggles the extra bytes; reserved bits stay zeroed. |
-| **Chunk Extras**        | Single: optional 6-byte mailbox. <br> First multi: 6-byte `message_key48`, optional 6-byte mailbox. <br> Follow-up: 6-byte `message_key48`. | `message_key48 = BLAKE3(original_payload)[..6]`; mailbox values are big-endian 48-bit when present; follow-up chunks omit mailbox bytes even though the header flag stays set.     |
-| **Identifiers**         | `message_key48` binds chunks and server deduplication. <br> `message_id = BLAKE3(decompressed_payload)[..16]`.                              | Mailbox values are masked to `0x0000_FFFF_FFFF_FFFF`; TXT paging accepts either the 12-hex prefix or the full 32-hex `message_id`.                                                 |
-| **Mailbox TXT Replies** | TXT RRs surface as `<message_id_prefix>\t<raw payload bytes>`.                                                                              | Prefix is the first 12 hex chars of `message_id`; oversized replies truncate gracefully and may set the TC bit as a paging hint.                                                   |
+| Section                 | Wire Format                                                                                                                                 | Notes                                                                                                                                                                                  |
+| :---------------------- | :------------------------------------------------------------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Envelope**            | LZMA input → chunk framing (`header + extras + payload`) → base32 labels (lowercase, no padding).                                           | Each label ≤ 63 bytes. Suffix the labels with the validated zone so the full QNAME stays under 255 bytes on the wire.                                                                  |
+| **Chunk Header (v2)**   | 8-bit flags `[ping:1][chunked:1][mailbox:1][first:1][version:3][reserved:1]`, plus optional 16-bit big-endian `remaining` when `chunked=1`. | `version = 0x2`; single-chunk messages use a 1-byte header; multi-chunk messages use 3 bytes. `ping` marks a content-less keepalive; `first` marks the opener of a multi-chunk stream. |
+| **Chunk Extras**        | Single: optional 6-byte mailbox. <br> First multi: 6-byte `message_key48`, optional 6-byte mailbox. <br> Follow-up: 6-byte `message_key48`. | `message_key48 = BLAKE3(original_payload)[..6]`; mailbox values are big-endian 48-bit when present; follow-up chunks omit mailbox bytes even though the header flag stays set.         |
+| **Ping**                | 1-byte header (`ping=1, mailbox=1`) + 6-byte mailbox, no payload.                                                                          | Stored with `message_type='ping'` in the database. Pings are excluded from TXT mailbox responses but visible in the WebSocket/HTTP API.                                               |
+| **Identifiers**         | `message_key48` binds chunks and server deduplication. <br> `message_id = BLAKE3(decompressed_payload)[..16]`.                              | Mailbox values are masked to `0x0000_FFFF_FFFF_FFFF`; TXT paging accepts either the 12-hex prefix or the full 32-hex `message_id`.                                                     |
+| **Mailbox TXT Replies** | TXT RRs surface as `<message_id_prefix>\t<raw payload bytes>`.                                                                              | Prefix is the first 12 hex chars of `message_id`; oversized replies truncate gracefully and may set the TC bit as a paging hint. Only `message` rows are included (pings are excluded). |
 
 ## Finding DNS Call Sites
 
