@@ -745,7 +745,11 @@ pub(crate) fn try_handle_dnsm(
         .or_insert_with(|| crate::Assembly::new(now));
     sess.last_seen = now;
     if sess.completed {
-        return;
+        if header.is_first && mailbox != sess.mailbox {
+            *sess = crate::Assembly::new(now);
+        } else {
+            return;
+        }
     }
     if header.is_first {
         sess.rmax = Some(header.remaining);
@@ -765,11 +769,8 @@ pub(crate) fn try_handle_dnsm(
         sess.recv_unique += 1;
     }
 
-    if header.remaining == 0 {
-        if let Some(rm) = sess.rmax {
-            if (rm as usize + 1) != sess.have_r.len() {
-                return;
-            }
+    if let Some(rm) = sess.rmax {
+        if (rm as usize + 1) == sess.have_r.len() {
             let mut assembled: Vec<u8> = Vec::new();
             for r in (0..=rm).rev() {
                 if let Some(chunk_data) = sess.chunks.get(&r) {
@@ -848,22 +849,22 @@ pub(crate) fn try_handle_dnsm(
             );
             sess.completed = true;
             let _ = log.flush();
+        } else {
+            let (missing, ranges) = summarize_missing(rm, &sess.have_r, 4);
+            log_event(
+                log,
+                now,
+                "assembly",
+                &format!(
+                    ",\"sid\":{},\"rmax\":{},\"chunks\":{},\"missing\":{},\"ranges\":\"{}\"",
+                    message_key,
+                    rm,
+                    sess.have_r.len(),
+                    missing,
+                    json_escape(&ranges)
+                ),
+            );
         }
-    } else if let Some(rm) = sess.rmax {
-        let (missing, ranges) = summarize_missing(rm, &sess.have_r, 4);
-        log_event(
-            log,
-            now,
-            "assembly",
-            &format!(
-                ",\"sid\":{},\"rmax\":{},\"chunks\":{},\"missing\":{},\"ranges\":\"{}\"",
-                message_key,
-                rm,
-                sess.have_r.len(),
-                missing,
-                json_escape(&ranges)
-            ),
-        );
     }
 }
 
