@@ -1,8 +1,8 @@
 [package]
 name = "dnsm"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
-authors = ["Raphael Martin <kontor@dnsm.re>"]
+authors = ["Raphael <kontor@dnsm.re>"]
 repository = "https://github.com/k-o-n-t-o-r/dnsm"
 license = "MIT"
 description = "Toolkit for covert data exfiltration using DNS"
