@@ -9,6 +9,7 @@ description = "DNS data exfiltration toolkit - Python bindings"
 requires-python = ">=3.9"
 authors = [{ email = "kontor@dnsm.re" }]
 license = { text = "MIT" }
+readme = "README.md"
 keywords = ["dns", "exfiltration", "security", "itsec", "gdpr", "telemetry", "tunneling", "covert-channel"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -25,6 +26,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Rust",
     "Topic :: Internet :: Name Service (DNS)",
