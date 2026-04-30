@@ -4,7 +4,12 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      github-release:
+        description: "Also upload wheels to the GitHub release for this tag"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -17,7 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     env:
       CARGO_TERM_COLOR: always
@@ -26,32 +31,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust (stable) and targets
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          target: ${{ matrix.target }}
-          rustflags: ""
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.12.0
-
-      - name: Install maturin
-        run: pip install maturin
-
       - name: Build wheel
-        run: |
-          maturin build --release \
-            --no-default-features --features python \
-            --zig \
-            --target ${{ matrix.target }} \
-            --compatibility manylinux_2_17
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: 2_17
+          args: --release --no-default-features --features python -i python${{ matrix.python }} --zig
+          sccache: false
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
@@ -100,3 +91,22 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+
+  github-release:
+    name: upload to GitHub release
+    if: inputs.github-release && startsWith(github.ref, 'refs/tags/')
+    needs: [build-wheels, build-sdist]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Upload to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

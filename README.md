@@ -1,5 +1,5 @@
 <div align="center">
-  <img alt="dnsm ASCII logotype" src="static/logo.png" style="max-width: 300px"><br>
+  <img alt="dnsm ASCII logotype" src="https://raw.githubusercontent.com/k-o-n-t-o-r/dnsm/master/static/logo.png" style="max-width: 300px"><br>
 </div>
 
 <div align="center">
@@ -10,16 +10,15 @@
 
 <p>
   <a href="https://crates.io/crates/dnsm"><img alt="crates.io" src="https://img.shields.io/crates/v/dnsm.svg"></a>
+  <a href="https://pypi.org/project/dnsm"><img alt="PyPI" src="https://img.shields.io/pypi/v/dnsm.svg"></a>
   <img alt="Rust" src="https://img.shields.io/badge/Rust-stable-orange?logo=rust">
-  <img src="https://dnsm.re/ping.png" width="1" height="1">
-  <img src="https://aaabqxiaacaaaciaaaaaaaaaaaadcglm4brwzlsbjpeyaaa.k.dnsm.re/ping2.png" width="1" height="1">
-  <!-- Field Study, hahaha -->
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.9+-blue?logo=python&logoColor=white">
 </p>
 
 `dnsm` lets you transmit arbitrary data over plain DNS by encoding bytes into domain names and reconstructing the original payload on an authoritative server you control. It works from constrained egress environments to browsers.
 
 <div align="center">
- <img src="static/screenshots/combined_inbox_browser.png" />
+ <img src="https://raw.githubusercontent.com/k-o-n-t-o-r/dnsm/master/static/screenshots/combined_inbox_browser.png" />
 
 <h3 style="margin-top: 5px;">
 
@@ -336,6 +335,60 @@ Notes:
 - The same compression, chunking, and mailbox behavior as the CLI is used under the hood.
 - For Node/bundlers, you can also import from the `pkg/` directory produced by the wasm build.
 
+## Python Client
+
+Native Python bindings powered by PyO3. The same behavior as the Rust CLI, with no subprocess spawned.
+
+### Install
+
+```bash
+pip install dnsm
+```
+
+Wheels are published for Linux x86_64 and aarch64 (CPython 3.9 to 3.13).
+
+### Library usage
+
+```python
+import dnsm
+
+# Encode data into DNS domain names
+domains, info = dnsm.build_domains(b"hello world", "k.dnsm.re")
+print(info.total_chunks)  # 1
+print(domains[0])         # aaabz6esl3...k.dnsm.re
+
+# With a mailbox
+domains, info = dnsm.build_domains(b"hello world", "k.dnsm.re", "050373323440")
+
+# Ping (content-less keepalive)
+ping = dnsm.build_ping_domain("050373323440", "k.dnsm.re")
+
+# Low-level helpers
+compressed = dnsm.compress_lzma(b"some data")
+encoded    = dnsm.base32_encode(b"\x00\x01\x02")
+decoded    = dnsm.base32_decode(encoded)   # bytes or None
+key        = dnsm.message_key48(b"payload") # u64
+mid        = dnsm.message_id(b"payload")    # 16 bytes (BLAKE3)
+
+# Validation
+labels = dnsm.validate_zone("k.dnsm.re")      # list[str] or raises ValueError
+canon  = dnsm.validate_mailbox("050373323440")  # str or None
+```
+
+### CLI
+
+A `dnsm-client` entry point mirrors the Rust CLI:
+
+```bash
+echo "hello world" | dnsm-client k.dnsm.re --random-mailbox -n
+echo "hello world" | dnsm-client k.dnsm.re --resolver-ip 127.0.0.1:5353 --delay-ms 2 --debug
+```
+
+Run `dnsm-client --help` for the full option list.
+
+----
+
+
 ## Domain Setup
 
 1. Register a short domain and provision a publicly reachable host.
@@ -399,6 +452,11 @@ If you prefer building `dnsm` locally:
   - Server: `cargo build --release --bin dnsm-server --features sqlite`
   - WS/API: `cargo build --release --bin dnsm-ws --features "sqlite,ws-server"`
 
+- Python bindings (requires [maturin](https://github.com/PyO3/maturin)):
+
+  - Dev install: `maturin develop --features python`
+  - Build wheel: `maturin build --release --features python`
+
 - WebAssembly bindings for the JS client:
 
   - Install `wasm-bindgen-cli` once: `cargo install wasm-bindgen-cli --locked`
@@ -415,3 +473,4 @@ If you prefer building `dnsm` locally:
 - Optional Cargo features:
   - `sqlite` - required for `dnsm-server` and `dnsm-ws` (persistence, queries, views)
   - `ws-server` - enables the WebSocket/HTTP inbox
+  - `python` - PyO3 bindings (used by `maturin`)
