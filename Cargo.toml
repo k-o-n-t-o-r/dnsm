@@ -1,6 +1,6 @@
 [package]
 name = "dnsm"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 authors = ["Raphael Martin <kontor@dnsm.re>"]
 repository = "https://github.com/k-o-n-t-o-r/dnsm"
@@ -12,7 +12,7 @@ keywords = ["gdpr", "itsec", "security", "exfiltration", "telemetry"]
 
 [dependencies]
 lzma-rust2 = "0.16.2"
-blake3 = { version = "1.8.4" }
+blake3 = { version = "1.8.5" }
 
 clap = { version = "4.6.1", features = [
     "derive",
@@ -37,6 +37,8 @@ base64 = { version = "0.22.1", optional = true }
 serde_json = { version = "1.0.149", optional = true }
 serde = { version = "1.0.228", features = ["derive"], optional = true }
 
+pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
+
 [lib]
 name = "dnsm"
 crate-type = ["rlib", "cdylib"]
@@ -47,6 +49,8 @@ default = ["native-cli", "sqlite"]
 native-cli = ["dep:clap", "dep:console", "dep:fastrand"]
 
 sqlite = ["dep:rusqlite"]
+
+python = ["dep:pyo3"]
 
 ws-server = [
     "dep:tokio",
@@ -84,9 +88,9 @@ codegen-units = 1
 strip = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2.118"
-js-sys = "0.3.95"
-blake3 = { version = "1.8.4", features = ["wasm32_simd"] }
+wasm-bindgen = "0.2.120"
+js-sys = "0.3.97"
+blake3 = { version = "1.8.5", features = ["wasm32_simd"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3.68"

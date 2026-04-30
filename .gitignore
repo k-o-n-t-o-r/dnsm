@@ -38,3 +38,11 @@ web/dist/
 dnsm.db
 dnsm.sqlite
 dnsm-*.tar.gz*
+
+# Python
+__pycache__/
+*.egg-info/
+*.whl
+*.so
+dist/
+.venv/

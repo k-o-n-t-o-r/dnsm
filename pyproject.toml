@@ -1,0 +1,19 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dnsm"
+version = "0.1.7"
+description = "DNS data exfiltration toolkit - Python bindings"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+[project.scripts]
+dnsm-client = "dnsm._cli:main"
+
+[tool.maturin]
+features = ["python"]
+module-name = "dnsm.dnsm"
+python-source = "python"
+compatibility = "manylinux_2_17"
