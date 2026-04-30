@@ -258,6 +258,7 @@ fn dnsm_parsing_errors_are_logged() {
         &mut log,
         peer,
         None,
+        1,
     );
     // short_bytes due to too-short decoded bytes ("a" decodes to < 8 bytes)
     try_handle_dnsm(
@@ -268,6 +269,7 @@ fn dnsm_parsing_errors_are_logged() {
         &mut log,
         peer,
         None,
+        1,
     );
     drop(log); // ensure file is closed
     let text = std::fs::read_to_string(tmp.join("log.txt")).unwrap();
@@ -389,7 +391,7 @@ fn mailbox_single_chunk_no_session_persists_to_db() {
     let now = 1_234u128;
     let peer = "127.0.0.1:53000".parse().unwrap();
 
-    try_handle_dnsm(&domain, &cfg, &mut sessions, now, &mut log, peer, Some(&db));
+    try_handle_dnsm(&domain, &cfg, &mut sessions, now, &mut log, peer, Some(&db), 1);
 
     // Expect DB row for derived session
     let sid = session_from_payload(data) as i64;
@@ -464,9 +466,9 @@ fn mailbox_single_chunk_duplicate_is_ignored_by_unique_index() {
     let peer = "127.0.0.1:53001".parse().unwrap();
 
     // First time: inserts
-    try_handle_dnsm(&domain, &cfg, &mut sessions, 100, &mut log, peer, Some(&db));
+    try_handle_dnsm(&domain, &cfg, &mut sessions, 100, &mut log, peer, Some(&db), 1);
     // Second time with same domain: should be ignored by UNIQUE index (OR IGNORE)
-    try_handle_dnsm(&domain, &cfg, &mut sessions, 101, &mut log, peer, Some(&db));
+    try_handle_dnsm(&domain, &cfg, &mut sessions, 101, &mut log, peer, Some(&db), 1);
 
     let mut stmt = db
         .prepare("SELECT COUNT(1) FROM messages WHERE mailbox=?1 AND data=?2")
@@ -552,6 +554,7 @@ fn mailbox_multi_chunk_persists_assembled_to_db() {
         &mut log,
         peer,
         Some(&db),
+        1,
     );
     try_handle_dnsm(
         &domain1,
@@ -561,6 +564,7 @@ fn mailbox_multi_chunk_persists_assembled_to_db() {
         &mut log,
         peer,
         Some(&db),
+        1,
     );
 
     // Expect assembled data persisted in DB
@@ -636,7 +640,7 @@ fn ascii_only_rejects_single_chunk_no_session_with_non_ascii() {
     let now = 123u128;
     let peer = "127.0.0.1:53010".parse().unwrap();
     let db = init_tmp_db(&tmp.join("msgs.sqlite"));
-    try_handle_dnsm(&domain, &cfg, &mut sessions, now, &mut log, peer, Some(&db));
+    try_handle_dnsm(&domain, &cfg, &mut sessions, now, &mut log, peer, Some(&db), 1);
 
     // No row inserted
     let sid = session_from_payload(data) as i64;
@@ -722,6 +726,7 @@ fn ascii_only_rejects_multi_chunk_with_non_ascii() {
         &mut log,
         peer,
         Some(&db),
+        1,
     );
     try_handle_dnsm(
         &domain1,
@@ -731,6 +736,7 @@ fn ascii_only_rejects_multi_chunk_with_non_ascii() {
         &mut log,
         peer,
         Some(&db),
+        1,
     );
 
     // No row should be inserted

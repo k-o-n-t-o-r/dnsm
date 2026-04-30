@@ -178,6 +178,31 @@ pub(crate) fn now_millis() -> u128 {
         .unwrap_or(0)
 }
 
+pub(crate) fn format_ts_utc(ms: u128) -> String {
+    let total_secs = (ms / 1000) as i64;
+    let millis = (ms % 1000) as u32;
+    let days = total_secs.div_euclid(86_400);
+    let secs_in_day = total_secs.rem_euclid(86_400);
+    let h = secs_in_day / 3600;
+    let m = (secs_in_day % 3600) / 60;
+    let s = secs_in_day % 60;
+    // civil_from_days (Howard Hinnant, "date" algorithms, public domain)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        year, month, d, h, m, s, millis
+    )
+}
+
 pub(crate) fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for ch in s.chars() {
@@ -409,6 +434,7 @@ pub(crate) fn try_handle_dnsm(
     log: &mut BufWriter<std::fs::File>,
     peer: SocketAddr,
     db: &Connection,
+    qtype: u16,
 ) {
     let labels = to_lower_labels(full_domain);
     let data_labels = match strip_zone(&labels, &cfg.zone_labels) {
@@ -552,6 +578,14 @@ pub(crate) fn try_handle_dnsm(
                 now,
                 json_escape(&e.to_string())
             );
+            if cfg.pretty_stdout {
+                println!(
+                    "{} {} op=insert_ping err={}",
+                    style("[ERR] db_error").red().bold(),
+                    style(format!("[{}]", format_ts_utc(now))).dim(),
+                    e
+                );
+            }
         }
         let _ = writeln!(
             log,
@@ -563,8 +597,9 @@ pub(crate) fn try_handle_dnsm(
         let _ = log.flush();
         if cfg.pretty_stdout {
             println!(
-                "{} mbox={} peer={}",
+                "{} {} mbox={} peer={}",
                 style("[PING]").magenta().bold(),
+                style(format!("[{}]", format_ts_utc(now))).dim(),
                 style(&mbox_hex).cyan(),
                 style(format_socket(peer)).magenta()
             );
@@ -640,9 +675,15 @@ pub(crate) fn try_handle_dnsm(
             None => String::new(),
         };
         let sid_str = format!("key={}", style(format!("{:012X}", message_key)).yellow());
+        let qtype_str = match qtype {
+            1 => "A".into(),
+            28 => "AAAA".into(),
+            _ => format!("{}", qtype),
+        };
         println!(
-            "{} {} ver={}{}{} rem={} data={} labels={}{} peer={}",
+            "{} {} {} ver={}{}{} rem={} data={} labels={}{} peer={} qt={}",
             style("[CHUNK]").green().bold(),
+            style(format!("[{}]", format_ts_utc(now))).dim(),
             sid_str,
             style(format!("{}", header.version)).blue(),
             first_tag,
@@ -651,7 +692,8 @@ pub(crate) fn try_handle_dnsm(
             style(format!("{}", data_len)).green(),
             style(format!("{}", data_labels.len())).dim(),
             mbox_tag,
-            style(format_socket(peer)).magenta()
+            style(format_socket(peer)).magenta(),
+            style(qtype_str).dim()
         );
     }
 
@@ -670,6 +712,14 @@ pub(crate) fn try_handle_dnsm(
                         json_escape(&err)
                     ),
                 );
+                if cfg.pretty_stdout {
+                    println!(
+                        "{} {} why=single err={}",
+                        style("[ERR] decompress_error").red().bold(),
+                        style(format!("[{}]", format_ts_utc(now))).dim(),
+                        err
+                    );
+                }
                 return;
             }
         };
@@ -685,8 +735,9 @@ pub(crate) fn try_handle_dnsm(
             let _ = log.flush();
             if cfg.pretty_stdout {
                 println!(
-                    "{} reason=non_ascii key={} bytes={}",
+                    "{} {} reason=non_ascii key={} bytes={}",
                     style("[REJECT]").red().bold(),
+                    style(format!("[{}]", format_ts_utc(now))).dim(),
                     sid,
                     data.len()
                 );
@@ -695,6 +746,7 @@ pub(crate) fn try_handle_dnsm(
         }
         let sid = compute_message_key48(&data);
         let msg_id = compute_message_id(&data);
+        let mut insert_ok = true;
         if let Err(e) = db.execute(
             "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id, peer_ip, message_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
@@ -707,12 +759,21 @@ pub(crate) fn try_handle_dnsm(
                 "message",
             ],
         ) {
+            insert_ok = false;
             let _ = writeln!(
                 log,
                 "{{\"ts\":{},\"event\":\"db_error\",\"op\":\"insert_single\",\"err\":\"{}\"}}",
                 now,
                 json_escape(&e.to_string())
             );
+            if cfg.pretty_stdout {
+                println!(
+                    "{} {} op=insert_single err={}",
+                    style("[ERR] db_error").red().bold(),
+                    style(format!("[{}]", format_ts_utc(now))).dim(),
+                    e
+                );
+            }
         }
         log_event(
             log,
@@ -726,6 +787,24 @@ pub(crate) fn try_handle_dnsm(
             ),
         );
         let _ = log.flush();
+        if insert_ok && cfg.pretty_stdout {
+            let mbox_tag = match mailbox {
+                Some(m) => format!(
+                    " mbox={}",
+                    style(format!("{:012X}", m & 0x0000_FFFF_FFFF_FFFF)).cyan()
+                ),
+                None => String::new(),
+            };
+            println!(
+                "{} {} key={} chunks=1 bytes={}{} peer={}",
+                style("[MSG]").green().bold(),
+                style(format!("[{}]", format_ts_utc(now))).dim(),
+                style(format!("{:012X}", sid & 0x0000_FFFF_FFFF_FFFF)).yellow(),
+                style(format!("{}", data.len())).green(),
+                mbox_tag,
+                style(format_socket(peer)).magenta()
+            );
+        }
         return;
     }
 
@@ -792,6 +871,15 @@ pub(crate) fn try_handle_dnsm(
                             json_escape(&err)
                         ),
                     );
+                    if cfg.pretty_stdout {
+                        println!(
+                            "{} {} key={:012X} why=multi err={}",
+                            style("[ERR] decompress_error").red().bold(),
+                            style(format!("[{}]", format_ts_utc(now))).dim(),
+                            message_key,
+                            err
+                        );
+                    }
                     return;
                 }
             };
@@ -807,8 +895,9 @@ pub(crate) fn try_handle_dnsm(
                 let _ = log.flush();
                 if cfg.pretty_stdout {
                     println!(
-                        "{} reason=non_ascii key={} bytes={}",
+                        "{} {} reason=non_ascii key={} bytes={}",
                         style("[REJECT]").red().bold(),
+                        style(format!("[{}]", format_ts_utc(now))).dim(),
                         sid,
                         data.len()
                     );
@@ -817,6 +906,7 @@ pub(crate) fn try_handle_dnsm(
             }
 
             let msg_id = compute_message_id(&data);
+            let mut insert_ok = true;
             if let Err(e) = db.execute(
                 "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id, peer_ip, message_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
@@ -829,12 +919,22 @@ pub(crate) fn try_handle_dnsm(
                     "message",
                 ],
             ) {
+                insert_ok = false;
                 let _ = writeln!(
                     log,
                     "{{\"ts\":{},\"event\":\"db_error\",\"op\":\"insert_multi\",\"err\":\"{}\"}}",
                     now,
                     json_escape(&e.to_string())
                 );
+                if cfg.pretty_stdout {
+                    println!(
+                        "{} {} op=insert_multi key={:012X} err={}",
+                        style("[ERR] db_error").red().bold(),
+                        style(format!("[{}]", format_ts_utc(now))).dim(),
+                        message_key,
+                        e
+                    );
+                }
             }
             log_event(
                 log,
@@ -849,6 +949,25 @@ pub(crate) fn try_handle_dnsm(
             );
             sess.completed = true;
             let _ = log.flush();
+            if insert_ok && cfg.pretty_stdout {
+                let mbox_tag = match sess.mailbox {
+                    Some(m) => format!(
+                        " mbox={}",
+                        style(format!("{:012X}", m & 0x0000_FFFF_FFFF_FFFF)).cyan()
+                    ),
+                    None => String::new(),
+                };
+                println!(
+                    "{} {} key={} chunks={} bytes={}{} peer={}",
+                    style("[MSG]").green().bold(),
+                    style(format!("[{}]", format_ts_utc(now))).dim(),
+                    style(format!("{:012X}", message_key & 0x0000_FFFF_FFFF_FFFF)).yellow(),
+                    style(format!("{}", (rm as u32) + 1)).green(),
+                    style(format!("{}", data.len())).green(),
+                    mbox_tag,
+                    style(format_socket(peer)).magenta()
+                );
+            }
         } else {
             let (missing, ranges) = summarize_missing(rm, &sess.have_r, 4);
             log_event(
@@ -994,8 +1113,9 @@ pub(crate) fn gc_assemblies(
             let _ = log.flush();
             if pretty {
                 println!(
-                    "{} {} key={} seen={} rmax={} missing={}",
+                    "{} {} {} key={} seen={} rmax={} missing={}",
                     style("[GC]").magenta().bold(),
+                    style(format!("[{}]", format_ts_utc(now))).dim(),
                     style("assembly_gc").magenta().bold(),
                     sid,
                     sess.have_r.len(),
@@ -1012,6 +1132,18 @@ pub(crate) fn gc_assemblies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_ts_utc_known_values() {
+        assert_eq!(format_ts_utc(0), "1970-01-01 00:00:00.000");
+        // 2026-04-22 20:58:12.345 UTC = 1776891492345 ms
+        assert_eq!(
+            format_ts_utc(1_776_891_492_345),
+            "2026-04-22 20:58:12.345"
+        );
+        // Leap year boundary
+        assert_eq!(format_ts_utc(1_582_934_400_000), "2020-02-29 00:00:00.000");
+    }
 
     #[test]
     fn valid_domain_ok() {

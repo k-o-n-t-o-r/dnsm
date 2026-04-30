@@ -305,6 +305,13 @@ fn main() -> std::io::Result<()> {
         std::process::exit(2);
     }
 
+    // Force-enable ANSI colors even when stdout isn't a TTY (e.g. under
+    // `docker logs`). Honor NO_COLOR=1 for users who opt out explicitly.
+    if std::env::var_os("NO_COLOR").is_none() {
+        console::set_colors_enabled(true);
+        console::set_colors_enabled_stderr(true);
+    }
+
     let cfg = ServerCfg {
         zone_labels,
         mailbox_zone_labels,
@@ -330,9 +337,11 @@ fn main() -> std::io::Result<()> {
         std::thread::spawn(move || match TcpListener::bind(&bind_addr_tcp) {
             Ok(listener) => {
                 if cfg_tcp.pretty_stdout {
+                    let ts = dns_handler::now_millis();
                     println!(
-                        "{} tcp-mailbox on {}",
+                        "{} {} tcp-mailbox on {}",
                         style("[TCP]").blue().bold(),
+                        style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
                         bind_addr_tcp
                     );
                 }
@@ -380,8 +389,9 @@ fn main() -> std::io::Result<()> {
             if !limiter.check_and_update(peer.ip(), ts) {
                 if cfg.pretty_stdout {
                     eprintln!(
-                        "{} Rate limit exceeded from {} ({} qps max)",
+                        "{} {} Rate limit exceeded from {} ({} qps max)",
                         style("[RATE_LIMIT]").yellow().bold(),
+                        style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
                         dns_handler::format_socket(peer),
                         limiter.max_qps
                     );
@@ -551,8 +561,9 @@ fn main() -> std::io::Result<()> {
             && cfg.pretty_stdout
         {
             eprintln!(
-                "{} domain validation failed: {} (original length: {}, sanitized length: {})",
+                "{} {} domain validation failed: {} (original length: {}, sanitized length: {})",
                 style("[VALIDATOR]").red().bold(),
+                style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
                 validation_err,
                 domain.len(),
                 domain_for_db.len()
@@ -576,7 +587,7 @@ fn main() -> std::io::Result<()> {
                             println!(
                                 "{} {} {} {}",
                                 style("[QUERY]").cyan().bold(),
-                                style(format!("[{}]", ts)).dim(),
+                                style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
                                 style(dns_handler::format_socket(peer)).magenta(),
                                 style("[ERR short_bytes]").red()
                             );
@@ -585,7 +596,7 @@ fn main() -> std::io::Result<()> {
                         println!(
                             "{} {} {} {}",
                             style("[QUERY]").cyan().bold(),
-                            style(format!("[{}]", ts)).dim(),
+                            style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
                             style(dns_handler::format_socket(peer)).magenta(),
                             style("[ERR invalid_base32]").red()
                         );
@@ -595,7 +606,7 @@ fn main() -> std::io::Result<()> {
                 println!(
                     "{} {} {} {} {}",
                     style("[QUERY]").cyan().bold(),
-                    style(format!("[{}]", ts)).dim(),
+                    style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
                     style(dns_handler::format_socket(peer)).magenta(),
                     style("QTYPE=16").white(),
                     style("[mailbox]").dim()
@@ -604,7 +615,7 @@ fn main() -> std::io::Result<()> {
                 println!(
                     "{} {} {} {} {}",
                     style("[QUERY]").cyan().bold(),
-                    style(format!("[{}]", ts)).dim(),
+                    style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
                     style(dns_handler::format_socket(peer)).magenta(),
                     style(format!("QTYPE={}", qtype)).white(),
                     style("[outside]").dim()
@@ -625,6 +636,7 @@ fn main() -> std::io::Result<()> {
                 &mut log,
                 peer,
                 &db,
+                qtype,
             );
             recv_count += 1;
             if recv_count.is_multiple_of(200) {
