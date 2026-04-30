@@ -26,32 +26,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust (stable) and targets
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          target: ${{ matrix.target }}
-          rustflags: ""
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.12.0
-
-      - name: Install maturin
-        run: pip install maturin
-
       - name: Build wheel
-        run: |
-          maturin build --release \
-            --no-default-features --features python \
-            --zig \
-            --target ${{ matrix.target }} \
-            --compatibility manylinux_2_17
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: 2_17
+          args: --release --no-default-features --features python -i python${{ matrix.python }} --zig
+          sccache: false
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
