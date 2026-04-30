@@ -22,6 +22,24 @@
   let genTimer = null;
   let generatorExpanded = false;
   let digExpanded = false;
+  let expandedMessages = new Set();
+
+  const COLLAPSE_LINE_THRESHOLD = 12;
+  const COLLAPSE_CHAR_THRESHOLD = 1000;
+
+  function isLongContent(content) {
+    return content.length > COLLAPSE_CHAR_THRESHOLD ||
+      content.split('\n').length > COLLAPSE_LINE_THRESHOLD;
+  }
+
+  function toggleExpand(id) {
+    if (expandedMessages.has(id)) {
+      expandedMessages.delete(id);
+    } else {
+      expandedMessages.add(id);
+    }
+    expandedMessages = expandedMessages;
+  }
 
   $: parentZone = zone.split('.').slice(1).join('.') || zone;
   $: mailboxZone = `m.${parentZone}`;
@@ -74,10 +92,10 @@
 
       let text = null;
       try {
-        text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+        text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       } catch {}
 
-      const printable = text && text.length > 0 && /^[\x09\x0a\x0d\x20-\x7E]*$/.test(text);
+      const printable = text && text.length > 0 && !/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text);
       if (text && printable) {
         const trimmed = text.trim();
         if (
@@ -584,15 +602,44 @@
             </div>
           </div>
           {#if msg.payload.type !== "ping"}
+            {@const long = isLongContent(msg.payload.content)}
+            {@const expanded = !long || expandedMessages.has(msg.id)}
             <div class="payload-section">
-              {#if msg.payload.type === "json"}
-                <pre class="payload mono">{msg.payload.content}</pre>
-              {:else if msg.payload.type === "binary"}
-                <pre class="payload mono">{msg.payload.content}</pre>
-              {:else}
-                <div class="payload">{msg.payload.content}</div>
-              {/if}
+              <div class="payload-wrap" class:collapsed={!expanded}>
+                {#if msg.payload.type === "json"}
+                  <pre class="payload mono">{msg.payload.content}</pre>
+                {:else if msg.payload.type === "binary"}
+                  <pre class="payload mono">{msg.payload.content}</pre>
+                {:else}
+                  <div class="payload">{msg.payload.content}</div>
+                {/if}
+                {#if !expanded}
+                  <div class="fade-overlay"></div>
+                {/if}
+              </div>
               <div class="toolbar" style="margin-top: 8px;">
+                {#if long}
+                  <button
+                    on:click={() => toggleExpand(msg.id)}
+                    class="iconbtn small"
+                    title={expanded ? "Collapse message" : "Expand message"}
+                  >
+                    <svg
+                      class="icon chevron-icon"
+                      class:expanded
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                    {expanded ? 'Show less' : 'Show more'}
+                  </button>
+                {/if}
                 <button
                   on:click={() => copyText(msg.payload.content)}
                   class="iconbtn small"
@@ -838,6 +885,33 @@
 
   .payload-section {
     margin-top: 8px;
+  }
+
+  .payload-wrap {
+    position: relative;
+  }
+
+  .payload-wrap.collapsed {
+    max-height: 200px;
+    overflow: hidden;
+  }
+
+  .fade-overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 60px;
+    background: linear-gradient(transparent, #0b1319);
+    pointer-events: none;
+  }
+
+  .chevron-icon {
+    transition: transform 0.2s ease;
+  }
+
+  .chevron-icon.expanded {
+    transform: rotate(180deg);
   }
 
   .iconbtn {
