@@ -170,8 +170,8 @@ struct ServerArgs {
     max_decompressed_bytes: u32,
 
     /// Maximum queries per second per IP address. Set to 0 to disable rate limiting.
-    /// Aims to prevent UDP amplification/reflection attacks. Default: 100 qps.
-    #[arg(long = "rate-limit-qps", value_name = "QPS", default_value_t = 100)]
+    /// Aims to prevent UDP amplification/reflection attacks. Default: 1000 qps.
+    #[arg(long = "rate-limit-qps", value_name = "QPS", default_value_t = 1000)]
     rate_limit_qps: u32,
 }
 
@@ -626,8 +626,9 @@ fn main() -> std::io::Result<()> {
         // Try to parse dnsm chunk when zone is configured
         // No tagged-log output anymore; file logs are JSON-only.
 
-        if cfg.zone_labels.is_some() {
-            // Use validated/sanitized domain to prevent injection attacks
+        if cfg.zone_labels.is_some() && (qtype == 1 || qtype == 28) {
+            // Only process A/AAAA queries as data carriers; NS and other
+            // query types from resolvers are not dnsm chunks.
             dns_handler::try_handle_dnsm(
                 &domain_for_db,
                 &cfg,
