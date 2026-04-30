@@ -7,7 +7,35 @@ name = "dnsm"
 version = "0.1.7"
 description = "DNS data exfiltration toolkit - Python bindings"
 requires-python = ">=3.9"
+authors = [{ email = "kontor@dnsm.re" }]
 license = { text = "MIT" }
+keywords = ["dns", "exfiltration", "security", "itsec", "gdpr", "telemetry", "tunneling", "covert-channel"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Internet :: Name Service (DNS)",
+    "Topic :: Security",
+    "Topic :: System :: Networking",
+]
+
+[project.urls]
+Homepage = "https://dnsm.re"
+Repository = "https://github.com/k-o-n-t-o-r/dnsm"
+Issues = "https://github.com/k-o-n-t-o-r/dnsm/issues"
 
 [project.scripts]
 dnsm-client = "dnsm._cli:main"
