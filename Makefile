@@ -22,6 +22,12 @@ build_ws:
 build_wasm:
 	./scripts/build_webassembly.sh
 
+build_python:
+	maturin build --release --no-default-features --features python --zig --compatibility manylinux_2_17
+
+develop_python:
+	maturin develop --no-default-features --features python
+
 clippy:
 	cargo clippy --all-targets --all-features --fix
 

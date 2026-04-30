@@ -147,7 +147,7 @@ pub fn validate_zone_and_labels(zone: &str) -> Result<Vec<String>, String> {
     Ok(labels)
 }
 
-fn base32_nopad_encode(data: &[u8]) -> String {
+pub(crate) fn base32_nopad_encode(data: &[u8]) -> String {
     const ALPH: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     let mut out = Vec::with_capacity((data.len() * 8).div_ceil(5));
     let mut acc: u64 = 0;
@@ -315,7 +315,7 @@ pub struct BuildInfo {
     pub msg_id48: Option<u64>,
 }
 
-fn compress_lzma(data: &[u8]) -> Vec<u8> {
+pub(crate) fn compress_lzma(data: &[u8]) -> Vec<u8> {
     use lzma_rust2::{LzmaOptions, LzmaWriter};
     use std::io::Write;
     let mut w =
@@ -556,6 +556,140 @@ mod wasm_api {
             }),
             Err(e) => wasm_bindgen::throw_str(&e),
         }
+    }
+}
+
+#[cfg(all(feature = "python", target_arch = "wasm32"))]
+compile_error!("The `python` feature cannot be used with wasm32 targets");
+
+// ---------------- PyO3 Python API ----------------
+#[cfg(feature = "python")]
+mod pyo3_api {
+    use super::*;
+    use pyo3::prelude::*;
+    use pyo3::types::PyBytes;
+
+    fn parse_hex12(v: &str) -> PyResult<u64> {
+        let s = v.trim();
+        if s.len() != 12 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "mailbox must be exactly 12 hex chars",
+            ));
+        }
+        u64::from_str_radix(s, 16)
+            .map_err(|_| pyo3::exceptions::PyValueError::new_err("bad hex"))
+    }
+
+    #[pyclass(name = "BuildInfo", frozen)]
+    pub struct PyBuildInfo {
+        #[pyo3(get)]
+        total_chunks: usize,
+        #[pyo3(get)]
+        first_payload_len: usize,
+        #[pyo3(get)]
+        payload_per_chunk: usize,
+        #[pyo3(get)]
+        msg_id48: Option<u64>,
+    }
+
+    #[pymethods]
+    impl PyBuildInfo {
+        fn __repr__(&self) -> String {
+            format!(
+                "BuildInfo(total_chunks={}, first_payload_len={}, payload_per_chunk={}, msg_id48={:?})",
+                self.total_chunks, self.first_payload_len, self.payload_per_chunk, self.msg_id48
+            )
+        }
+    }
+
+    impl From<BuildInfo> for PyBuildInfo {
+        fn from(b: BuildInfo) -> Self {
+            Self {
+                total_chunks: b.total_chunks,
+                first_payload_len: b.first_payload_len,
+                payload_per_chunk: b.payload_per_chunk,
+                msg_id48: b.msg_id48,
+            }
+        }
+    }
+
+    #[pyfunction]
+    #[pyo3(signature = (data, zone, mailbox=None))]
+    fn build_domains(
+        data: &[u8],
+        zone: &str,
+        mailbox: Option<&str>,
+    ) -> PyResult<(Vec<String>, PyBuildInfo)> {
+        let mailbox = mailbox.map(parse_hex12).transpose()?;
+        let opts = BuildOptions { mailbox };
+        let (domains, info) = build_domains_for_data(data, zone, &opts)
+            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        Ok((domains, info.into()))
+    }
+
+    #[pyfunction]
+    fn build_domains_raw(payload: &[u8], zone: &str) -> PyResult<Vec<String>> {
+        build_domains_for_payload(payload, zone)
+            .map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    #[pyfunction]
+    #[pyo3(name = "build_ping_domain")]
+    fn build_ping_domain_py(mailbox: &str, zone: &str) -> PyResult<String> {
+        let mb = parse_hex12(mailbox)?;
+        build_ping_domain(mb, zone).map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    #[pyfunction]
+    #[pyo3(name = "compress_lzma")]
+    fn compress_lzma_py<'py>(py: Python<'py>, data: &[u8]) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &compress_lzma(data))
+    }
+
+    #[pyfunction]
+    fn base32_encode(data: &[u8]) -> String {
+        base32_nopad_encode(data)
+    }
+
+    #[pyfunction]
+    fn base32_decode<'py>(py: Python<'py>, s: &str) -> Option<Bound<'py, PyBytes>> {
+        base32_nopad_decode(s).map(|v| PyBytes::new(py, &v))
+    }
+
+    #[pyfunction]
+    fn message_id<'py>(py: Python<'py>, payload: &[u8]) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &compute_message_id(payload))
+    }
+
+    #[pyfunction]
+    fn message_key48(payload: &[u8]) -> u64 {
+        compute_message_key48(payload)
+    }
+
+    #[pyfunction]
+    fn validate_zone(zone: &str) -> PyResult<Vec<String>> {
+        validate_zone_and_labels(zone).map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    #[pyfunction]
+    fn validate_mailbox(s: &str) -> Option<String> {
+        validate_mailbox_hex12(s)
+    }
+
+    #[pymodule]
+    pub fn dnsm(m: &Bound<'_, PyModule>) -> PyResult<()> {
+        m.add_class::<PyBuildInfo>()?;
+        m.add_function(wrap_pyfunction!(build_domains, m)?)?;
+        m.add_function(wrap_pyfunction!(build_domains_raw, m)?)?;
+        m.add_function(wrap_pyfunction!(build_ping_domain_py, m)?)?;
+        m.add_function(wrap_pyfunction!(compress_lzma_py, m)?)?;
+        m.add_function(wrap_pyfunction!(base32_encode, m)?)?;
+        m.add_function(wrap_pyfunction!(base32_decode, m)?)?;
+        m.add_function(wrap_pyfunction!(message_id, m)?)?;
+        m.add_function(wrap_pyfunction!(message_key48, m)?)?;
+        m.add_function(wrap_pyfunction!(validate_zone, m)?)?;
+        m.add_function(wrap_pyfunction!(validate_mailbox, m)?)?;
+        Ok(())
     }
 }
 
