@@ -1,0 +1,30 @@
+FROM rust:bookworm AS build
+WORKDIR /app
+ENV CARGO_HOME=/usr/local/cargo
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY README.md ./README.md
+
+RUN --mount=type=cache,id=dnsm-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=dnsm-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    cargo install --locked --path . --bin dnsm-client
+
+FROM debian:bookworm-slim AS runtime
+LABEL org.opencontainers.image.title="dnsm-client" \
+      org.opencontainers.image.source="https://github.com/k-o-n-t-o-r/dnsm" \
+      org.opencontainers.image.description="dnsm: Toolkit for Data Exfiltration via DNS - client only"
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    rm -rf /var/lib/apt/lists/*; \
+    adduser --system --group --no-create-home dnsm
+
+COPY --from=build /usr/local/cargo/bin/dnsm-client /usr/local/bin/dnsm-client
+
+USER dnsm:dnsm
+WORKDIR /app
+
+ENTRYPOINT ["/usr/local/bin/dnsm-client"]
+CMD ["--help"]

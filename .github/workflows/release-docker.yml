@@ -49,6 +49,16 @@ jobs:
             cache_scope: dnsm-ws
             platform: linux/arm64
             arch: arm64
+          - image: dnsm-client
+            file: docker/Dockerfile.dnsm-client
+            cache_scope: dnsm-client
+            platform: linux/amd64
+            arch: amd64
+          - image: dnsm-client
+            file: docker/Dockerfile.dnsm-client
+            cache_scope: dnsm-client
+            platform: linux/arm64
+            arch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -111,7 +121,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}-${{ matrix.arch }}
 
   docker-manifest:
-    name: docker manifest (dnsm-server, dnsm-ws)
+    name: docker manifest (dnsm-server, dnsm-ws, dnsm-client)
     needs: docker-arch
     runs-on: ubuntu-22.04
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push_images)
@@ -152,7 +162,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euxo pipefail
-          for img in dnsm-server dnsm-ws; do
+          for img in dnsm-server dnsm-ws dnsm-client; do
             for t in "v${VERSION}" "${VERSION}" latest; do
               docker buildx imagetools create \
                 --tag ghcr.io/${OWNER}/${img}:${t} \

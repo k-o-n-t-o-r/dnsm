@@ -1,9 +1,6 @@
 name: release-github
 
 on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.0" # run only on minor releases (patch == 0)
   workflow_dispatch:
     inputs:
       version:
@@ -11,15 +8,17 @@ on:
         required: false
         type: string
       create_release:
-        description: "Also create a GitHub Release (manual runs)"
+        description: "Also create a GitHub Release and publish to PyPI"
         required: false
         default: false
         type: boolean
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
+  # ── Native binaries (musl, static) ──
   build:
     name: build (${{ matrix.bin }} @ ${{ matrix.target }})
     runs-on: ubuntu-22.04
@@ -50,21 +49,15 @@ jobs:
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild --locked
 
-      - name: Compute version (tag or input)
+      - name: Compute version
         shell: bash
         run: |
           set -euxo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ver="${{ inputs.version }}"
-            if [ -z "$ver" ]; then
-              ver=$(sed -n 's/^version\s*=\s*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' Cargo.toml | head -n1)
-            fi
-            tag="v${ver}"
-          else
-            tag="${GITHUB_REF_NAME}"
-            ver="${tag#v}"
+          ver="${{ inputs.version }}"
+          if [ -z "$ver" ]; then
+            ver=$(sed -n 's/^version\s*=\s*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' Cargo.toml | head -n1)
           fi
-          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "TAG=v${ver}" >> "$GITHUB_ENV"
           echo "VERSION=$ver" >> "$GITHUB_ENV"
 
       - name: Verify Cargo.toml version matches tag/version
@@ -119,31 +112,88 @@ jobs:
             ${{ matrix.bin }}-${{ env.VERSION }}-${{ matrix.target }}.tar.gz
             ${{ matrix.bin }}-${{ env.VERSION }}-${{ matrix.target }}.tar.gz.sha256
 
-  release:
-    name: publish release
-    needs: build
+  # ── Python wheels ──
+  build-wheels:
+    name: wheel (${{ matrix.target }} / py${{ matrix.python }})
     runs-on: ubuntu-22.04
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    env:
+      CARGO_TERM_COLOR: always
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Compute version (tag or input)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: 2_17
+          args: --release --no-default-features --features python -i python${{ matrix.python }} --zig
+          sccache: false
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}-py${{ matrix.python }}
+          path: target/wheels/*.whl
+
+  # ── Python sdist ──
+  build-sdist:
+    name: sdist
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build sdist
+        run: maturin sdist --out target/wheels
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: target/wheels/*.tar.gz
+
+  # ── GitHub Release ──
+  release:
+    name: publish release
+    needs: [build, build-wheels, build-sdist]
+    runs-on: ubuntu-22.04
+    if: inputs.create_release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute version
         shell: bash
         run: |
           set -euxo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ver="${{ inputs.version }}"
-            if [ -z "$ver" ]; then
-              ver=$(sed -n 's/^version\s*=\s*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' Cargo.toml | head -n1)
-            fi
-            tag="v${ver}"
-          else
-            tag="${GITHUB_REF_NAME}"
-            ver="${tag#v}"
+          ver="${{ inputs.version }}"
+          if [ -z "$ver" ]; then
+            ver=$(sed -n 's/^version\s*=\s*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' Cargo.toml | head -n1)
           fi
-          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "TAG=v${ver}" >> "$GITHUB_ENV"
           echo "VERSION=$ver" >> "$GITHUB_ENV"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -161,3 +211,24 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.sha256
+            artifacts/*.whl
+
+  # ── PyPI publish ──
+  publish-pypi:
+    name: publish to PyPI
+    needs: release
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+    steps:
+      - name: Download wheel and sdist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: "{wheel-*,sdist}"
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
