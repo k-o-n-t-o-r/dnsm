@@ -459,12 +459,11 @@ pub fn build_domains_for_data(
                 let b = mid.to_be_bytes();
                 extras.extend_from_slice(&b[2..8]);
             }
-            if is_first {
-                if let Some(mb) = mailbox48 {
+            if is_first
+                && let Some(mb) = mailbox48 {
                     let bb = mb.to_be_bytes();
                     extras.extend_from_slice(&bb[2..8]);
                 }
-            }
         } else {
             if let Some(mb) = mailbox48 {
                 let bb = mb.to_be_bytes();
