@@ -288,7 +288,12 @@ pub fn compute_message_key48(payload: &[u8]) -> u64 {
     u64::from_be_bytes(b)
 }
 
-fn build_domain(header: &ChunkHeader, extras: &[u8], data: &[u8], zone_labels: &[String]) -> String {
+fn build_domain(
+    header: &ChunkHeader,
+    extras: &[u8],
+    data: &[u8],
+    zone_labels: &[String],
+) -> String {
     let hdr_bytes = header.to_bytes();
     let mut buf = Vec::with_capacity(hdr_bytes.len() + extras.len() + data.len());
     buf.extend_from_slice(&hdr_bytes);
@@ -576,8 +581,7 @@ mod pyo3_api {
                 "mailbox must be exactly 12 hex chars",
             ));
         }
-        u64::from_str_radix(s, 16)
-            .map_err(|_| pyo3::exceptions::PyValueError::new_err("bad hex"))
+        u64::from_str_radix(s, 16).map_err(|_| pyo3::exceptions::PyValueError::new_err("bad hex"))
     }
 
     #[pyclass(name = "BuildInfo", frozen)]
@@ -629,8 +633,7 @@ mod pyo3_api {
 
     #[pyfunction]
     fn build_domains_raw(payload: &[u8], zone: &str) -> PyResult<Vec<String>> {
-        build_domains_for_payload(payload, zone)
-            .map_err(pyo3::exceptions::PyValueError::new_err)
+        build_domains_for_payload(payload, zone).map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     #[pyfunction]

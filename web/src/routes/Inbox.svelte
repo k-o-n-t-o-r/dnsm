@@ -3,6 +3,8 @@
   import { link } from "svelte-spa-router";
   import { validateMailbox, randomMailbox } from "../lib/utils.js";
 
+  export let params = {};
+
   let ws = null;
   let reconnectTimer = null;
   let reconnectDelay = 1000;
@@ -384,14 +386,21 @@
   }
 
   onMount(() => {
-    // Apply query params first to get mailbox from URL if present
-    applyQueryParams();
-    // If no mailbox was set from query params, use a fixed dev mailbox or random
+    // Route param takes priority (e.g. #/inbox/b5b051a225ca)
+    if (params.id && validateMailbox(params.id)) {
+      mailbox = params.id;
+    }
+
+    if (!mailbox) applyQueryParams();
+
+    // Fallback: dev mailbox or random
     if (!mailbox) {
       mailbox = import.meta.env.DEV ? "d00d00d00d00" : randomMailbox();
     }
+
     // Preload WASM for generator
     loadWasm();
+
     // Auto-connect on load
     connect();
   });

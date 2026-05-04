@@ -61,7 +61,7 @@ struct ClientArgs {
     #[arg(long = "debug", action = ArgAction::SetTrue)]
     debug: bool,
 
-    /// Print send progress to stdout with colors (does not affect --dont-query output)
+    /// Print colored send progress to stderr (does not affect --dont-query output)
     #[arg(short = 'p', long = "pretty", action = ArgAction::SetTrue)]
     pretty_stdout: bool,
 
@@ -244,7 +244,7 @@ fn main() -> io::Result<()> {
                 let id = u16::from_be_bytes([q[0], q[1]]);
                 s.send(&q)?;
                 if pretty_stdout {
-                    println!(
+                    eprintln!(
                         "{} ping {} id={}",
                         style("[SEND]").green().bold(),
                         domain,
@@ -257,12 +257,12 @@ fn main() -> io::Result<()> {
                         Ok(n) if n >= 2 => {
                             let rid = u16::from_be_bytes([buf[0], buf[1]]);
                             if rid == id && pretty_stdout {
-                                println!("{} id={}", style("[ACK]").green().bold(), id);
+                                eprintln!("{} id={}", style("[ACK]").green().bold(), id);
                             }
                         }
                         _ => {
                             if pretty_stdout {
-                                println!(
+                                eprintln!(
                                     "{} id={} after={}ms",
                                     style("[TIMEOUT]").yellow().bold(),
                                     id,
@@ -326,7 +326,7 @@ fn main() -> io::Result<()> {
             }
             eprintln!("dnsm-client: sending via resolver {}", target);
             if pretty_stdout {
-                println!(
+                eprintln!(
                     "{} {}",
                     style("[INFO]").cyan().bold(),
                     style(format!("resolver {}", target)).cyan()
@@ -340,23 +340,41 @@ fn main() -> io::Result<()> {
         }
     }
 
-    eprintln!(
-        "dnsm-client: zone={} first_payload={} payload_per_chunk={} total_chunks={}{}",
-        zone,
-        info.first_payload_len,
-        info.payload_per_chunk,
-        info.total_chunks,
-        match mailbox_hex.as_deref() {
-            Some(s) => format!(" mailbox={}", s),
-            None => String::new(),
-        }
-    );
-
-    if pretty_stdout && let Some(ref s) = mailbox_hex {
-        println!(
-            "{} {}",
+    if pretty_stdout {
+        eprintln!(
+            "{} {}={} {}={} {}={} {}={}",
             style("[INFO]").cyan().bold(),
-            style(format!("mailbox {}", s)).cyan()
+            style("zone").dim(),
+            style(&zone).cyan(),
+            style("first_payload").dim(),
+            style(info.first_payload_len).cyan(),
+            style("payload_per_chunk").dim(),
+            style(info.payload_per_chunk).cyan(),
+            style("total_chunks").dim(),
+            style(info.total_chunks).cyan(),
+        );
+        if let Some(ref s) = mailbox_hex {
+            eprintln!(
+                "{} {}={}  {} {}",
+                style("[INFO]").cyan().bold(),
+                style("mailbox").dim(),
+                style(s).cyan(),
+                style("View inbox at").white(),
+                style(format!("https://dnsm.re/#/inbox/{}", s)).bold()
+            );
+            eprintln!();
+        }
+    } else {
+        eprintln!(
+            "dnsm-client: zone={} first_payload={} payload_per_chunk={} total_chunks={}{}",
+            zone,
+            info.first_payload_len,
+            info.payload_per_chunk,
+            info.total_chunks,
+            match mailbox_hex.as_deref() {
+                Some(s) => format!(" mailbox={}", s),
+                None => String::new(),
+            }
         );
     }
 
@@ -386,7 +404,7 @@ fn main() -> io::Result<()> {
                 );
             }
             if pretty_stdout {
-                println!(
+                eprintln!(
                     "{} idx={} remaining={} qname_len={} labels={} id={}",
                     style("[SEND]").green().bold(),
                     i,
@@ -414,9 +432,9 @@ fn main() -> io::Result<()> {
 
             if pretty_stdout && await_reply_ms > 0 {
                 if ack_ok {
-                    println!("{} id={} idx={}", style("[ACK]").green().bold(), id, i);
+                    eprintln!("{} id={} idx={}", style("[ACK]").green().bold(), id, i);
                 } else {
-                    println!(
+                    eprintln!(
                         "{} id={} idx={} after={}ms",
                         style("[TIMEOUT]").yellow().bold(),
                         id,

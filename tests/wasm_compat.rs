@@ -2,7 +2,10 @@
 
 use wasm_bindgen_test::*;
 
-use dnsm::{BuildOptions, ChunkHeader, build_domains_for_data, build_ping_domain, base32_nopad_decode, PROTOCOL_VERSION};
+use dnsm::{
+    BuildOptions, ChunkHeader, PROTOCOL_VERSION, base32_nopad_decode, build_domains_for_data,
+    build_ping_domain,
+};
 
 fn strip_zone<'a>(name: &'a str, zone: &str) -> String {
     let mut parts: Vec<&str> = name.split('.').collect();

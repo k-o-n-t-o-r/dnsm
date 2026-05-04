@@ -17,7 +17,13 @@ fn wasm_target_compiles() {
     }
 
     let status = Command::new("cargo")
-        .args(["check", "--lib", "--target", "wasm32-unknown-unknown", "--no-default-features"])
+        .args([
+            "check",
+            "--lib",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--no-default-features",
+        ])
         .status()
         .expect("run cargo check");
 

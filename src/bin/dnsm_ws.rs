@@ -98,7 +98,16 @@ fn fetch_all_messages(db: &Connection, mailbox_hex: &str) -> rusqlite::Result<Ve
         let msg_id: Option<Vec<u8>> = row.get(5)?;
         let peer_ip: Option<String> = row.get(6)?;
         let message_type: Option<String> = row.get(7)?;
-        Ok((id, message_key, mailbox, data, received_at, msg_id, peer_ip, message_type))
+        Ok((
+            id,
+            message_key,
+            mailbox,
+            data,
+            received_at,
+            msg_id,
+            peer_ip,
+            message_type,
+        ))
     })?;
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     let mut out = Vec::new();

@@ -1,7 +1,6 @@
 use console::style;
 use dnsm::{
-    ChunkHeader, base32_nopad_decode, compute_message_id, compute_message_key48,
-    to_lower_labels,
+    ChunkHeader, base32_nopad_decode, compute_message_id, compute_message_key48, to_lower_labels,
 };
 use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet};
@@ -1137,10 +1136,7 @@ mod tests {
     fn format_ts_utc_known_values() {
         assert_eq!(format_ts_utc(0), "1970-01-01 00:00:00.000");
         // 2026-04-22 20:58:12.345 UTC = 1776891492345 ms
-        assert_eq!(
-            format_ts_utc(1_776_891_492_345),
-            "2026-04-22 20:58:12.345"
-        );
+        assert_eq!(format_ts_utc(1_776_891_492_345), "2026-04-22 20:58:12.345");
         // Leap year boundary
         assert_eq!(format_ts_utc(1_582_934_400_000), "2020-02-29 00:00:00.000");
     }

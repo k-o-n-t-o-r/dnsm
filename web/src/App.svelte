@@ -7,6 +7,7 @@
   const routes = {
     '/': Splash,
     '/inbox': Inbox,
+    '/inbox/:id': Inbox,
     '/browser-test': BrowserTest,
   };
 </script>
