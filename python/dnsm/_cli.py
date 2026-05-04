@@ -76,19 +76,66 @@ def main(argv: list[str] | None = None) -> None:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("zone", metavar="ZONE", help="Zone/apex the payload labels are appended to")
-    parser.add_argument("--resolver-ip", metavar="HOST[:PORT]", help="Send to this resolver (default: first nameserver in /etc/resolv.conf)")
-    parser.add_argument("-n", "--dont-query", action="store_true", help="Do not send; print hostnames (one per chunk)")
-    parser.add_argument("--await-reply-ms", metavar="MS", type=int, default=0, help="Wait up to this many ms for a reply (0 disables)")
-    parser.add_argument("--delay-ms", metavar="MS", type=int, default=5, help="Sleep this many ms between queries")
-    parser.add_argument("--sent-log", metavar="PATH", help="Append a human-readable send log to this file")
-    parser.add_argument("--mailbox", metavar="HEX12", type=_validate_mailbox, help="Mailbox ID (exactly 12 hex chars)")
-    parser.add_argument("--random-mailbox", action="store_true", help="Generate a random mailbox ID")
-    parser.add_argument("--ping", action="store_true", help="Send a minimal ping (mailbox required)")
-    parser.add_argument("--debug", action="store_true", help="Verbose progress to stderr")
-    parser.add_argument("-p", "--pretty", action="store_true", help="Print send progress to stdout with colors")
+    parser.add_argument(
+        "zone", metavar="ZONE", help="Zone/apex the payload labels are appended to"
+    )
+    parser.add_argument(
+        "--resolver-ip",
+        metavar="HOST[:PORT]",
+        help="Send to this resolver (default: first nameserver in /etc/resolv.conf)",
+    )
+    parser.add_argument(
+        "-n",
+        "--dont-query",
+        action="store_true",
+        help="Do not send; print hostnames (one per chunk)",
+    )
+    parser.add_argument(
+        "--await-reply-ms",
+        metavar="MS",
+        type=int,
+        default=0,
+        help="Wait up to this many ms for a reply (0 disables)",
+    )
+    parser.add_argument(
+        "--delay-ms",
+        metavar="MS",
+        type=int,
+        default=5,
+        help="Sleep this many ms between queries",
+    )
+    parser.add_argument(
+        "--sent-log",
+        metavar="PATH",
+        help="Append a human-readable send log to this file",
+    )
+    parser.add_argument(
+        "--mailbox",
+        metavar="HEX12",
+        type=_validate_mailbox,
+        help="Mailbox ID (exactly 12 hex chars)",
+    )
+    parser.add_argument(
+        "--random-mailbox", action="store_true", help="Generate a random mailbox ID"
+    )
+    parser.add_argument(
+        "--ping", action="store_true", help="Send a minimal ping (mailbox required)"
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Verbose progress to stderr"
+    )
+    parser.add_argument(
+        "-p",
+        "--pretty",
+        action="store_true",
+        help="Print colored send progress to stderr",
+    )
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
-    parser.add_argument("--tagged-log", action="store_true", help="Also write bracketed tags to --sent-log")
+    parser.add_argument(
+        "--tagged-log",
+        action="store_true",
+        help="Also write bracketed tags to --sent-log",
+    )
 
     args = parser.parse_args(argv)
 
@@ -97,11 +144,15 @@ def main(argv: list[str] | None = None) -> None:
 
     use_color = args.pretty and not args.no_color
 
-    def _styled(tag: str, color: str) -> str:
-        codes = {"green": "32", "cyan": "36", "yellow": "33"}
+    def _styled(tag: str, color: str, bold: bool = True) -> str:
+        codes = {"green": "32", "cyan": "36", "yellow": "33", "white": "37", "dim": "2"}
         if not use_color:
             return tag
-        return f"\033[1;{codes.get(color, '0')}m{tag}\033[0m"
+        prefix = "1;" if bold else ""
+        code = codes.get(color, "0")
+        if color == "dim":
+            return f"\033[2m{tag}\033[0m"
+        return f"\033[{prefix}{code}m{tag}\033[0m"
 
     mailbox_hex: str | None = None
     if args.random_mailbox:
@@ -112,14 +163,19 @@ def main(argv: list[str] | None = None) -> None:
     # --- Ping mode ---
     if args.ping:
         if mailbox_hex is None:
-            print("dnsm-client: --ping requires --mailbox or --random-mailbox", file=sys.stderr)
+            print(
+                "dnsm-client: --ping requires --mailbox or --random-mailbox",
+                file=sys.stderr,
+            )
             sys.exit(2)
         try:
             domain = dnsm.build_ping_domain(mailbox_hex, args.zone)
         except ValueError as e:
             print(f"dnsm-client: {e}", file=sys.stderr)
             sys.exit(2)
-        print(f"dnsm-client: zone={args.zone} ping mailbox={mailbox_hex}", file=sys.stderr)
+        print(
+            f"dnsm-client: zone={args.zone} ping mailbox={mailbox_hex}", file=sys.stderr
+        )
         if args.dont_query:
             print(domain)
             return
@@ -169,27 +225,47 @@ def main(argv: list[str] | None = None) -> None:
                 sys.exit(1)
             print(f"dnsm-client: sending via resolver {target_str}", file=sys.stderr)
             if args.pretty:
-                print(f"{_styled('[INFO]', 'cyan')} resolver {target_str}")
+                print(
+                    f"{_styled('[INFO]', 'cyan')} {_styled('resolver', 'cyan')} {_styled(target_str, 'cyan')}",
+                    file=sys.stderr,
+                )
         else:
             print(
                 "dnsm-client: no --resolver-ip and could not parse /etc/resolv.conf; printing hostnames",
                 file=sys.stderr,
             )
 
-    print(
-        f"dnsm-client: zone={args.zone} first_payload={info.first_payload_len} "
-        f"payload_per_chunk={info.payload_per_chunk} total_chunks={info.total_chunks}"
-        + (f" mailbox={mailbox_hex}" if mailbox_hex else ""),
-        file=sys.stderr,
-    )
-    if args.pretty and mailbox_hex:
-        print(f"{_styled('[INFO]', 'cyan')} mailbox {mailbox_hex}")
+    if args.pretty:
+        print(
+            f"{_styled('[INFO]', 'cyan')} {_styled('zone', 'dim', False)}={_styled(args.zone, 'cyan')} "
+            f"{_styled('first_payload', 'dim', False)}={_styled(str(info.first_payload_len), 'cyan')} "
+            f"{_styled('payload_per_chunk', 'dim', False)}={_styled(str(info.payload_per_chunk), 'cyan')} "
+            f"{_styled('total_chunks', 'dim', False)}={_styled(str(info.total_chunks), 'cyan')}",
+            file=sys.stderr,
+        )
+        if mailbox_hex:
+            print(
+                f"{_styled('[INFO]', 'cyan')} {_styled('mailbox', 'dim', False)}={_styled(mailbox_hex, 'cyan')}  "
+                f"{_styled('View inbox at', 'white', False)} {_styled(f'https://dnsm.re/#/inbox/{mailbox_hex}', 'white')}",
+                file=sys.stderr,
+            )
+            print(file=sys.stderr)
+    else:
+        print(
+            f"dnsm-client: zone={args.zone} first_payload={info.first_payload_len} "
+            f"payload_per_chunk={info.payload_per_chunk} total_chunks={info.total_chunks}"
+            + (f" mailbox={mailbox_hex}" if mailbox_hex else ""),
+            file=sys.stderr,
+        )
 
     for i, qname in enumerate(domains):
         remaining = info.total_chunks - 1 - i
         if sock is not None:
             pct = ((i + 1) / info.total_chunks * 100) if info.total_chunks else 100.0
-            print(f"dnsm-client: progress {i + 1}/{info.total_chunks} ({pct:.1f}%)", file=sys.stderr)
+            print(
+                f"dnsm-client: progress {i + 1}/{info.total_chunks} ({pct:.1f}%)",
+                file=sys.stderr,
+            )
             q = _build_query(qname)
             qid = struct.unpack(">H", q[:2])[0]
             if args.debug:
@@ -201,7 +277,8 @@ def main(argv: list[str] | None = None) -> None:
             if args.pretty:
                 print(
                     f"{_styled('[SEND]', 'green')} idx={i} remaining={remaining} "
-                    f"qname_len={len(qname)} labels={qname.count('.') + 1} id={qid}"
+                    f"qname_len={len(qname)} labels={qname.count('.') + 1} id={qid}",
+                    file=sys.stderr,
                 )
             sock.send(q)
 
@@ -217,12 +294,19 @@ def main(argv: list[str] | None = None) -> None:
 
             if args.pretty and args.await_reply_ms > 0:
                 if ack_ok:
-                    print(f"{_styled('[ACK]', 'green')} id={qid} idx={i}")
+                    print(
+                        f"{_styled('[ACK]', 'green')} id={qid} idx={i}", file=sys.stderr
+                    )
                 else:
-                    print(f"{_styled('[TIMEOUT]', 'yellow')} id={qid} idx={i} after={args.await_reply_ms}ms")
+                    print(
+                        f"{_styled('[TIMEOUT]', 'yellow')} id={qid} idx={i} after={args.await_reply_ms}ms",
+                        file=sys.stderr,
+                    )
 
             if logfile:
-                ack_str = "-" if args.await_reply_ms == 0 else ("ok" if ack_ok else "timeout")
+                ack_str = (
+                    "-" if args.await_reply_ms == 0 else ("ok" if ack_ok else "timeout")
+                )
                 logfile.write(
                     f"SENT idx={i} remaining={remaining} qname_len={len(qname)} "
                     f"labels={qname.count('.') + 1} id={qid} ack={ack_str} time_ms={args.await_reply_ms}\n"
@@ -234,7 +318,9 @@ def main(argv: list[str] | None = None) -> None:
                     )
                     if args.await_reply_ms > 0:
                         tag = "[ACK]" if ack_ok else "[TIMEOUT]"
-                        logfile.write(f"{tag} id={qid} idx={i} after={args.await_reply_ms}ms\n")
+                        logfile.write(
+                            f"{tag} id={qid} idx={i} after={args.await_reply_ms}ms\n"
+                        )
                 logfile.flush()
 
             if args.delay_ms > 0:
@@ -276,17 +362,20 @@ def _send_ping(domain: str, host: str, port: int, args, _styled) -> None:
     qid = struct.unpack(">H", q[:2])[0]
     sock.send(q)
     if args.pretty:
-        print(f"{_styled('[SEND]', 'green')} ping {domain} id={qid}")
+        print(f"{_styled('[SEND]', 'green')} ping {domain} id={qid}", file=sys.stderr)
     if args.await_reply_ms > 0:
         try:
             buf = sock.recv(512)
             if len(buf) >= 2:
                 rid = struct.unpack(">H", buf[:2])[0]
                 if rid == qid and args.pretty:
-                    print(f"{_styled('[ACK]', 'green')} id={qid}")
+                    print(f"{_styled('[ACK]', 'green')} id={qid}", file=sys.stderr)
         except (socket.timeout, OSError):
             if args.pretty:
-                print(f"{_styled('[TIMEOUT]', 'yellow')} id={qid} after={args.await_reply_ms}ms")
+                print(
+                    f"{_styled('[TIMEOUT]', 'yellow')} id={qid} after={args.await_reply_ms}ms",
+                    file=sys.stderr,
+                )
     sock.close()
 
 
