@@ -564,6 +564,12 @@ function MessageCard({
         )}
       </div>
 
+      {isPing && (
+        <div className="mt-4">
+          <span className="text-xs text-muted-foreground italic">Ping</span>
+        </div>
+      )}
+
       {!isPing && (
         <div className="mt-4">
           <div className={`relative ${!isExpanded ? "max-h-[200px] overflow-hidden" : ""}`}>
