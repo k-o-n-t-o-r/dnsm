@@ -1,0 +1,452 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer (e.g. 1.2.3). Leave empty → Cargo.toml"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─────────────────────────────────────────────
+  #  PHASE 1 — BUILD EVERYTHING
+  #  All build jobs must pass before any publishing
+  # ─────────────────────────────────────────────
+
+  # ── Resolve version once, share across jobs ──
+  version:
+    name: resolve version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        id: v
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ver="${{ inputs.version }}"
+          if [ -z "$ver" ]; then
+            ver=$(sed -n 's/^version\s*=\s*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' Cargo.toml | head -n1)
+          fi
+          [ -n "$ver" ] || { echo "::error::Could not determine version"; exit 1; }
+          cargo_ver=$(sed -n 's/^version\s*=\s*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' Cargo.toml | head -n1)
+          if [ "$ver" != "$cargo_ver" ]; then
+            echo "::error::Input version ($ver) does not match Cargo.toml ($cargo_ver)"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=v${ver}" >> "$GITHUB_OUTPUT"
+
+  # ── Native binaries (musl, static) ──
+  build-binaries:
+    name: build ${{ matrix.bin }} (${{ matrix.target }})
+    needs: version
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: true
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+        bin: [dnsm-client, dnsm-server, dnsm-ws]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+          rustflags: ""
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.12.0
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          case "${{ matrix.bin }}" in
+            dnsm-client) FEATURES="" ;;
+            dnsm-server) FEATURES="sqlite" ;;
+            dnsm-ws)     FEATURES="sqlite,ws-server" ;;
+          esac
+          if [ -n "$FEATURES" ]; then
+            cargo zigbuild --release --target ${{ matrix.target }} --bin ${{ matrix.bin }} --features "$FEATURES"
+          else
+            cargo zigbuild --release --target ${{ matrix.target }} --bin ${{ matrix.bin }}
+          fi
+
+      - name: Package
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euxo pipefail
+          outdir="dist/${{ matrix.target }}"
+          mkdir -p "$outdir"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$outdir/"
+          strip -s "$outdir/${{ matrix.bin }}" || true
+          tar_name="${{ matrix.bin }}-${VERSION}-${{ matrix.target }}.tar.gz"
+          tar czf "$tar_name" -C "$outdir" "${{ matrix.bin }}"
+          sha256sum "$tar_name" > "$tar_name.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.bin }}-${{ matrix.target }}
+          path: |
+            ${{ matrix.bin }}-${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
+            ${{ matrix.bin }}-${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz.sha256
+
+  # ── Python wheels ──
+  build-wheels:
+    name: wheel ${{ matrix.target }} py${{ matrix.python }}
+    needs: version
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: true
+      matrix:
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: 2_17
+          args: --release --no-default-features --features python -i python${{ matrix.python }} --zig
+          sccache: false
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}-py${{ matrix.python }}
+          path: target/wheels/*.whl
+
+  # ── Python sdist ──
+  build-sdist:
+    name: sdist
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - run: pip install maturin
+
+      - name: Build sdist
+        run: maturin sdist --out target/wheels
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: target/wheels/*.tar.gz
+
+  # ── Docker images (build only, no push) ──
+  build-docker:
+    name: docker ${{ matrix.image }} (${{ matrix.arch }})
+    needs: version
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - image: dnsm-server
+            file: docker/Dockerfile.dnsm-server
+            arch: amd64
+            platform: linux/amd64
+          - image: dnsm-server
+            file: docker/Dockerfile.dnsm-server
+            arch: arm64
+            platform: linux/arm64
+          - image: dnsm-ws
+            file: docker/Dockerfile.dnsm-ws
+            arch: amd64
+            platform: linux/amd64
+          - image: dnsm-ws
+            file: docker/Dockerfile.dnsm-ws
+            arch: arm64
+            platform: linux/arm64
+          - image: dnsm-client
+            file: docker/Dockerfile.dnsm-client
+            arch: amd64
+            platform: linux/amd64
+          - image: dnsm-client
+            file: docker/Dockerfile.dnsm-client
+            arch: arm64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=v${{ needs.version.outputs.version }}
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=latest
+          flavor: |
+            latest=false
+            suffix=-${{ matrix.arch }}
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: false
+          load: ${{ matrix.arch == 'amd64' }}
+          platforms: ${{ matrix.platform }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+  # ── Crates.io dry run ──
+  build-crate:
+    name: crates.io dry-run
+    needs: version
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Verify crate packages correctly
+        run: cargo publish --dry-run
+
+  # ── WASM + web build ──
+  build-web:
+    name: wasm + web
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-unknown-unknown
+          rustflags: ""
+
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --locked
+
+      - name: Build WASM
+        run: |
+          set -euxo pipefail
+          cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
+          wasm-bindgen --target web --out-dir web/src/lib/pkg-web target/wasm32-unknown-unknown/release/dnsm.wasm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build web frontend
+        working-directory: web
+        run: |
+          npm ci
+          npx tsc -b
+          npx vite build
+
+  # ─────────────────────────────────────────────
+  #  PHASE 2 — PUBLISH EVERYTHING
+  #  Only runs after ALL builds succeed
+  # ─────────────────────────────────────────────
+
+  # ── GitHub Release ──
+  release:
+    name: github release
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: dnsm ${{ needs.version.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.sha256
+            artifacts/*.whl
+
+  # ── PyPI ──
+  publish-pypi:
+    name: publish pypi
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: "{wheel-*,sdist}"
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  # ── Crates.io ──
+  publish-crate:
+    name: publish crates.io
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  # ── Docker push + manifests ──
+  publish-docker:
+    name: push docker images
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - image: dnsm-server
+            file: docker/Dockerfile.dnsm-server
+            arch: amd64
+            platform: linux/amd64
+          - image: dnsm-server
+            file: docker/Dockerfile.dnsm-server
+            arch: arm64
+            platform: linux/arm64
+          - image: dnsm-ws
+            file: docker/Dockerfile.dnsm-ws
+            arch: amd64
+            platform: linux/amd64
+          - image: dnsm-ws
+            file: docker/Dockerfile.dnsm-ws
+            arch: arm64
+            platform: linux/arm64
+          - image: dnsm-client
+            file: docker/Dockerfile.dnsm-client
+            arch: amd64
+            platform: linux/amd64
+          - image: dnsm-client
+            file: docker/Dockerfile.dnsm-client
+            arch: arm64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=v${{ needs.version.outputs.version }}
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=latest
+          flavor: |
+            latest=false
+            suffix=-${{ matrix.arch }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: true
+          platforms: ${{ matrix.platform }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+  # ── Docker multi-arch manifests ──
+  docker-manifests:
+    name: docker manifests
+    needs: [version, publish-docker]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifests
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euxo pipefail
+          for img in dnsm-server dnsm-ws dnsm-client; do
+            for t in "v${VERSION}" "${VERSION}" latest; do
+              docker buildx imagetools create \
+                --tag "ghcr.io/${OWNER}/${img}:${t}" \
+                "ghcr.io/${OWNER}/${img}:${t}-amd64" \
+                "ghcr.io/${OWNER}/${img}:${t}-arm64"
+            done
+          done
