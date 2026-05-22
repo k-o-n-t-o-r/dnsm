@@ -47,15 +47,22 @@ pub(crate) fn parse_question(pkt: &[u8]) -> Result<(String, usize, u16, u16), ()
         if off >= pkt.len() {
             return Err(());
         }
-        let len = pkt[off] as usize;
+        let raw = pkt[off];
+        if raw & 0xC0 != 0 {
+            return Err(());
+        }
+        let len = raw as usize;
         off += 1;
         if len == 0 {
             break;
         }
-        if off + len > pkt.len() {
+        if len > 63 || off + len > pkt.len() {
             return Err(());
         }
         let label = std::str::from_utf8(&pkt[off..off + len]).map_err(|_| ())?;
+        if label.contains('.') {
+            return Err(());
+        }
         labels.push(label.to_string());
         off += len;
     }
@@ -364,7 +371,10 @@ pub(crate) fn sanitize_domain_for_logging(domain: &str) -> String {
     const MAX_LOG_LENGTH: usize = 255;
 
     let truncated = if domain.len() > MAX_LOG_LENGTH {
-        &domain[..MAX_LOG_LENGTH]
+        match domain.get(..MAX_LOG_LENGTH) {
+            Some(s) => s,
+            None => &domain[..domain.floor_char_boundary(MAX_LOG_LENGTH)],
+        }
     } else {
         domain
     };

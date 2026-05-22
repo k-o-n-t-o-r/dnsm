@@ -77,7 +77,9 @@ def main(argv: list[str] | None = None) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "zone", metavar="ZONE", help="Zone/apex the payload labels are appended to"
+        "zone",
+        metavar="ZONE",
+        help="Zone/apex the payload labels are appended to",
     )
     parser.add_argument(
         "--resolver-ip",
@@ -169,12 +171,13 @@ def main(argv: list[str] | None = None) -> None:
             )
             sys.exit(2)
         try:
-            domain = dnsm.build_ping_domain(mailbox_hex, args.zone)
+            domain = dnsm.build_human_ping_domain(mailbox_hex, args.zone)
         except ValueError as e:
             print(f"dnsm-client: {e}", file=sys.stderr)
             sys.exit(2)
         print(
-            f"dnsm-client: zone={args.zone} ping mailbox={mailbox_hex}", file=sys.stderr
+            f"dnsm-client: zone={args.zone} ping mailbox={mailbox_hex}",
+            file=sys.stderr,
         )
         if args.dont_query:
             print(domain)

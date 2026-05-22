@@ -457,6 +457,13 @@ fn main() -> std::io::Result<()> {
         let in_zone = dns_handler::strip_zone(&labels, &cfg.zone_labels).is_some();
         let in_mbox_zone = dns_handler::strip_zone(&labels, &cfg.mailbox_zone_labels).is_some();
 
+        let is_human_ping = in_zone
+            && dns_handler::strip_zone(&labels, &cfg.zone_labels).is_some_and(|stripped| {
+                stripped.len() == 1
+                    && stripped[0].len() == 12
+                    && stripped[0].chars().all(|c| c.is_ascii_hexdigit())
+            });
+
         let mut base32_chars: Option<i64> = None;
         let mut data_labels: Option<i64> = None;
         let mut decode_error: Option<String> = None;
@@ -467,7 +474,17 @@ fn main() -> std::io::Result<()> {
         let mut mailbox_hex: Option<String> = None;
         let mut message_key_i64: Option<i64> = None;
 
-        if in_zone && let Some(labels_in_zone) = dns_handler::strip_zone(&labels, &cfg.zone_labels)
+        if is_human_ping
+            && qclass == 1
+            && (qtype == 1 || qtype == 28)
+            && let Some(stripped) = dns_handler::strip_zone(&labels, &cfg.zone_labels)
+        {
+            mailbox_hex = Some(stripped[0].clone());
+        }
+
+        if in_zone
+            && !is_human_ping
+            && let Some(labels_in_zone) = dns_handler::strip_zone(&labels, &cfg.zone_labels)
         {
             let mut b32 = String::with_capacity(labels_in_zone.iter().map(|s| s.len()).sum());
             for lab in labels_in_zone.iter() {
@@ -571,7 +588,9 @@ fn main() -> std::io::Result<()> {
         }
 
         if cfg.pretty_stdout {
-            if in_zone {
+            if is_human_ping {
+                // Human-ping pretty output is printed by the handler below.
+            } else if in_zone {
                 // Decode the header from the in-zone dnsm query and show a concise summary
                 if let Some(labels_in_zone) = dns_handler::strip_zone(&labels, &cfg.zone_labels) {
                     let mut b32 =
@@ -623,10 +642,100 @@ fn main() -> std::io::Result<()> {
             }
         }
 
+        // Human-readable ping: single 12-hex label before the data zone
+        // (e.g. bf1c3a4a3694.k.dnsm.re). Handles A (persist + respond)
+        // and AAAA (respond only) to prevent AAAA from falling into the
+        // base32 decoder.
+        if is_human_ping
+            && (qtype == 1 || qtype == 28)
+            && qclass == 1
+            && let Some(zone_stripped) = dns_handler::strip_zone(&labels, &cfg.zone_labels)
+            && zone_stripped.len() == 1
+            && let Some(mb_hex) = validate_mailbox_hex12(&zone_stripped[0])
+        {
+            if qtype == 28 {
+                let mut resp =
+                    dns_handler::build_response(pkt, hdr, q_end, fixed_ip, false, true, &cfg);
+                if query_has_edns {
+                    dns_handler::append_opt(&mut resp, 512);
+                }
+                if !cfg.no_response {
+                    let _ = socket.send_to(&resp, peer);
+                }
+                continue;
+            }
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"ping");
+            if let Ok(mb_val) = u64::from_str_radix(&mb_hex, 16) {
+                let mb_bytes = (mb_val & 0x0000_FFFF_FFFF_FFFF).to_be_bytes();
+                hasher.update(&mb_bytes[2..8]);
+            }
+            hasher.update(peer.ip().to_string().as_bytes());
+            hasher.update(&(ts as u64).to_be_bytes());
+            let hash = hasher.finalize();
+            let msg_id: [u8; 16] = hash.as_bytes()[..16].try_into().unwrap();
+
+            if let Err(e) = db.execute(
+                "INSERT OR IGNORE INTO messages (message_key, mailbox, data, received_at, message_id, peer_ip, message_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    0i64,
+                    &mb_hex,
+                    &[] as &[u8],
+                    ts as i64,
+                    &msg_id[..],
+                    peer.ip().to_string(),
+                    "ping",
+                ],
+            ) {
+                let _ = writeln!(
+                    log,
+                    "{{\"ts\":{},\"event\":\"db_error\",\"op\":\"insert_ping\",\"err\":\"{}\"}}",
+                    ts,
+                    dns_handler::json_escape(&e.to_string())
+                );
+                let _ = log.flush();
+                if cfg.pretty_stdout {
+                    println!(
+                        "{} {} op=insert_ping err={}",
+                        style("[ERR] db_error").red().bold(),
+                        style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
+                        e
+                    );
+                }
+            } else {
+                let _ = writeln!(
+                    log,
+                    "{{\"ts\":{},\"event\":\"ping\",\"mailbox\":\"{}\",\"peer\":\"{}\"}}",
+                    ts,
+                    mb_hex,
+                    dns_handler::json_escape(&dns_handler::format_socket(peer))
+                );
+                let _ = log.flush();
+                if cfg.pretty_stdout {
+                    println!(
+                        "{} {} mbox={} peer={}",
+                        style("[PING]").magenta().bold(),
+                        style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
+                        style(&mb_hex).cyan(),
+                        style(dns_handler::format_socket(peer)).magenta(),
+                    );
+                }
+            }
+
+            let mut resp = dns_handler::build_response(pkt, hdr, q_end, fixed_ip, true, true, &cfg);
+            if query_has_edns {
+                dns_handler::append_opt(&mut resp, 512);
+            }
+            if !cfg.no_response {
+                let _ = socket.send_to(&resp, peer);
+            }
+            continue;
+        }
+
         // Try to parse dnsm chunk when zone is configured
         // No tagged-log output anymore; file logs are JSON-only.
 
-        if cfg.zone_labels.is_some() && (qtype == 1 || qtype == 28) {
+        if cfg.zone_labels.is_some() && !is_human_ping && (qtype == 1 || qtype == 28) {
             // Only process A/AAAA queries as data carriers; NS and other
             // query types from resolvers are not dnsm chunks.
             dns_handler::try_handle_dnsm(

@@ -459,11 +459,10 @@ pub fn build_domains_for_data(
                 let b = mid.to_be_bytes();
                 extras.extend_from_slice(&b[2..8]);
             }
-            if is_first
-                && let Some(mb) = mailbox48 {
-                    let bb = mb.to_be_bytes();
-                    extras.extend_from_slice(&bb[2..8]);
-                }
+            if is_first && let Some(mb) = mailbox48 {
+                let bb = mb.to_be_bytes();
+                extras.extend_from_slice(&bb[2..8]);
+            }
         } else {
             if let Some(mb) = mailbox48 {
                 let bb = mb.to_be_bytes();
@@ -500,10 +499,24 @@ pub fn build_ping_domain(mailbox: u64, zone: &str) -> Result<String, String> {
     Ok(domain)
 }
 
+pub fn build_human_ping_domain(mailbox_hex: &str, zone: &str) -> Result<String, String> {
+    let mb = validate_mailbox_hex12(mailbox_hex)
+        .ok_or_else(|| "mailbox must be exactly 12 hex chars".to_string())?;
+    let zone_labels = validate_zone_and_labels(zone)?;
+    let domain = format!("{}.{}", mb, zone_labels.join("."));
+    let wire_len: usize = domain.len() + 2;
+    if wire_len > 255 {
+        return Err(format!(
+            "ping domain exceeds DNS 255-byte wire limit ({wire_len} bytes)"
+        ));
+    }
+    Ok(domain)
+}
+
 // ---------------- wasm-bindgen JS API ----------------
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {
-    use super::{BuildOptions, build_domains_for_data, build_ping_domain};
+    use super::{BuildOptions, build_domains_for_data, build_human_ping_domain, build_ping_domain};
     use js_sys::Array;
     use wasm_bindgen::prelude::*;
 
@@ -532,6 +545,15 @@ mod wasm_api {
         }
         let mailbox = parse_hex12(mailbox_str).unwrap_or_else(|e| wasm_bindgen::throw_str(&e));
         match build_ping_domain(mailbox, zone) {
+            Ok(d) => d,
+            Err(e) => wasm_bindgen::throw_str(&e),
+        }
+    }
+
+    /// Returns a human-readable ping domain: `<mailbox>.<zone>`.
+    #[wasm_bindgen]
+    pub fn human_ping_domain(mailbox_str: &str, zone: &str) -> String {
+        match build_human_ping_domain(mailbox_str, zone) {
             Ok(d) => d,
             Err(e) => wasm_bindgen::throw_str(&e),
         }
@@ -643,6 +665,12 @@ mod pyo3_api {
     }
 
     #[pyfunction]
+    #[pyo3(name = "build_human_ping_domain")]
+    fn build_human_ping_domain_py(mailbox: &str, zone: &str) -> PyResult<String> {
+        build_human_ping_domain(mailbox, zone).map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    #[pyfunction]
     #[pyo3(name = "compress_lzma")]
     fn compress_lzma_py<'py>(py: Python<'py>, data: &[u8]) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &compress_lzma(data))
@@ -684,6 +712,7 @@ mod pyo3_api {
         m.add_function(wrap_pyfunction!(build_domains, m)?)?;
         m.add_function(wrap_pyfunction!(build_domains_raw, m)?)?;
         m.add_function(wrap_pyfunction!(build_ping_domain_py, m)?)?;
+        m.add_function(wrap_pyfunction!(build_human_ping_domain_py, m)?)?;
         m.add_function(wrap_pyfunction!(compress_lzma_py, m)?)?;
         m.add_function(wrap_pyfunction!(base32_encode, m)?)?;
         m.add_function(wrap_pyfunction!(base32_decode, m)?)?;

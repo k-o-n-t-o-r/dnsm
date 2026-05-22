@@ -202,3 +202,20 @@ fn single_chunk_v2_saves_bytes_vs_v1_overhead() {
     assert!(!header.chunked);
     assert!(header.is_first);
 }
+
+#[test]
+fn human_ping_domain_format() {
+    let domain = build_human_ping_domain("f8925edd7f13", "k.dnsm.re").expect("ok");
+    assert_eq!(domain, "f8925edd7f13.k.dnsm.re");
+}
+
+#[test]
+fn human_ping_domain_validates_mailbox() {
+    assert!(build_human_ping_domain("bad", "k.dnsm.re").is_err());
+    assert!(build_human_ping_domain("zzzzzzzzzzzz", "k.dnsm.re").is_err());
+}
+
+#[test]
+fn human_ping_domain_validates_zone() {
+    assert!(build_human_ping_domain("f8925edd7f13", "").is_err());
+}

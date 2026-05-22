@@ -1,6 +1,6 @@
 use clap::{ArgAction, Parser};
 use console::style;
-use dnsm::{BuildInfo, BuildOptions, build_domains_for_data, build_ping_domain};
+use dnsm::{BuildInfo, BuildOptions, build_domains_for_data, build_human_ping_domain};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::net::{Ipv6Addr, UdpSocket};
@@ -21,7 +21,7 @@ use std::str::FromStr;
     disable_help_subcommand = true
 )]
 struct ClientArgs {
-    /// Zone/apex the payload labels are appended to
+    /// Zone/apex the payload labels are appended to (required).
     #[arg(value_name = "ZONE")]
     zone: String,
 
@@ -53,7 +53,8 @@ struct ClientArgs {
     #[arg(long = "random-mailbox", action = ArgAction::SetTrue, conflicts_with = "mailbox")]
     random_mailbox: bool,
 
-    /// Send a minimal ping (no message content, mailbox required)
+    /// Send a minimal ping (no message content, mailbox required).
+    /// Produces `<mailbox>.<zone>` (e.g. bf1c3a4a3694.k.dnsm.re).
     #[arg(long = "ping", action = ArgAction::SetTrue)]
     ping: bool,
 
@@ -205,14 +206,14 @@ fn main() -> io::Result<()> {
 
     // --- Ping mode ---
     if ping {
-        let mb = match mailbox_u64 {
-            Some(v) => v,
+        let mb_hex_str = match mailbox_hex.as_deref() {
+            Some(s) => s,
             None => {
                 eprintln!("dnsm-client: --ping requires --mailbox or --random-mailbox");
                 std::process::exit(2);
             }
         };
-        let domain = match build_ping_domain(mb, &zone) {
+        let domain = match build_human_ping_domain(mb_hex_str, &zone) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("dnsm-client: {}", e);

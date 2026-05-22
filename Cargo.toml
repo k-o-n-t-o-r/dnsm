@@ -11,7 +11,7 @@ homepage = "https://dnsm.re"
 keywords = ["gdpr", "itsec", "security", "exfiltration", "telemetry"]
 
 [dependencies]
-lzma-rust2 = "0.16.2"
+lzma-rust2 = "0.16.3"
 blake3 = { version = "1.8.5" }
 
 clap = { version = "4.6.1", features = [
@@ -22,7 +22,7 @@ console = { version = "0.16.3", optional = true }
 fastrand = { version = "2.4.1", optional = true }
 
 rusqlite = { version = "0.39.0", features = ["bundled"], optional = true }
-tokio = { version = "1.52.0", features = [
+tokio = { version = "1.52.3", features = [
     "macros",
     "sync",
     "rt-multi-thread",
@@ -34,7 +34,7 @@ warp = { version = "0.4.2", features = [
 ], optional = true }
 futures = { version = "0.3.32", default-features = false, optional = true }
 base64 = { version = "0.22.1", optional = true }
-serde_json = { version = "1.0.149", optional = true }
+serde_json = { version = "1.0.150", optional = true }
 serde = { version = "1.0.228", features = ["derive"], optional = true }
 
 pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
@@ -88,8 +88,8 @@ codegen-units = 1
 strip = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2.120"
-js-sys = "0.3.97"
+wasm-bindgen = "0.2.121"
+js-sys = "0.3.98"
 blake3 = { version = "1.8.5", features = ["wasm32_simd"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
