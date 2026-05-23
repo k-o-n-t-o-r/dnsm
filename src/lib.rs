@@ -1,18 +1,23 @@
 #![allow(clippy::missing_errors_doc)]
 
-// v2 header: flags byte first, variable length.
+// v2/v3 header: flags byte first, variable length.
 // Flags byte layout:
 //   Bit 7:     is_ping
 //   Bit 6:     chunked   (1 = multi-chunk, remaining field present)
 //   Bit 5:     has_mailbox
 //   Bit 4:     is_first
-//   Bits [3:1] version   (3 bits, currently 2)
+//   Bits [3:1] version   (3 bits, currently 3)
 //   Bit 0:     reserved
 //
 // When chunked=false: header is 1 byte (flags only).
 // When chunked=true:  header is 3 bytes (flags + remaining u16 BE).
+//
+// v3 change: multi-chunk msg_id48 is now mailbox-aware.
+//   v2: msg_id48 = blake3(payload)[..6]
+//   v3: msg_id48 = blake3("dnsm-msg-id\x00" || has_mb(1) || mb(6) || payload)[..6]
+//       or        blake3("dnsm-msg-id\x00" || no_mb(1) || payload)[..6]
 
-pub const PROTOCOL_VERSION: u8 = 2;
+pub const PROTOCOL_VERSION: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkHeader {
@@ -355,6 +360,19 @@ pub fn build_domains_for_payload(payload: &[u8], zone: &str) -> Result<Vec<Strin
     } else {
         (total_chunks - 1) as u16
     };
+    let raw_msg_id: Option<[u8; 6]> = if total_chunks > 1 {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"dnsm-msg-id\x00");
+        hasher.update(&[0u8]);
+        hasher.update(payload);
+        let h = hasher.finalize();
+        let mut b = [0u8; 6];
+        b.copy_from_slice(&h.as_bytes()[..6]);
+        Some(b)
+    } else {
+        None
+    };
+
     let mut out = Vec::with_capacity(total_chunks);
     let mut sent = 0usize;
     for i in 0..total_chunks {
@@ -376,7 +394,11 @@ pub fn build_domains_for_payload(payload: &[u8], zone: &str) -> Result<Vec<Strin
             !is_single,
             false,
         );
-        let extras: Vec<u8> = if !is_single { vec![0; 6] } else { Vec::new() };
+        let extras: Vec<u8> = if let Some(mid) = raw_msg_id {
+            mid.to_vec()
+        } else {
+            Vec::new()
+        };
         let domain = build_domain(&header, &extras, data, &zone_labels);
         out.push(domain);
         sent = end;
@@ -421,7 +443,19 @@ pub fn build_domains_for_data(
     };
     let mailbox48 = opts.mailbox.map(|v| v & 0x0000_FFFF_FFFF_FFFF);
     let msg_id48: Option<u64> = if total_chunks > 1 {
-        Some(compute_message_key48(data))
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"dnsm-msg-id\x00");
+        if let Some(mb) = mailbox48 {
+            hasher.update(&[1u8]);
+            hasher.update(&mb.to_be_bytes()[2..8]);
+        } else {
+            hasher.update(&[0u8]);
+        }
+        hasher.update(data);
+        let h = hasher.finalize();
+        let mut b = [0u8; 8];
+        b[2..8].copy_from_slice(&h.as_bytes()[..6]);
+        Some(u64::from_be_bytes(b))
     } else {
         None
     };

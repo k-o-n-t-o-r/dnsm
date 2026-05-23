@@ -1,6 +1,7 @@
 use console::style;
 use dnsm::{
-    ChunkHeader, base32_nopad_decode, compute_message_id, compute_message_key48, to_lower_labels,
+    ChunkHeader, PROTOCOL_VERSION, base32_nopad_decode, compute_message_id, compute_message_key48,
+    to_lower_labels,
 };
 use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet};
@@ -540,8 +541,7 @@ pub(crate) fn try_handle_dnsm(
         Some(v) => v,
         None => return,
     };
-    if header.version == 0 {
-        eprintln!("[dnsm] dropping v1 query from {}", format_socket(peer));
+    if header.version != PROTOCOL_VERSION {
         return;
     }
     let mut offset = hdr_len;
@@ -841,10 +841,11 @@ pub(crate) fn try_handle_dnsm(
         }
     }
     if header.is_first {
-        sess.rmax = Some(header.remaining);
-        if mailbox.is_some() {
-            sess.mailbox = mailbox;
+        if sess.rmax.is_some() && mailbox != sess.mailbox {
+            return;
         }
+        sess.rmax = Some(header.remaining);
+        sess.mailbox = mailbox;
     }
     let data = bytes[offset..].to_vec();
     if let Some(prev) = sess.chunks.get(&header.remaining)

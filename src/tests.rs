@@ -219,3 +219,126 @@ fn human_ping_domain_validates_mailbox() {
 fn human_ping_domain_validates_zone() {
     assert!(build_human_ping_domain("f8925edd7f13", "").is_err());
 }
+
+#[test]
+fn multi_chunk_key_differs_by_mailbox() {
+    let zone = "x.t";
+    let mut big = vec![0u8; 1024];
+    for (i, b) in big.iter_mut().enumerate() {
+        *b = (i * 37 + 13) as u8;
+    }
+    let mb_a = BuildOptions {
+        mailbox: Some(0x000011112222),
+    };
+    let mb_b = BuildOptions {
+        mailbox: Some(0x000033334444),
+    };
+    let (domains_a, info_a) = build_domains_for_data(&big, zone, &mb_a).unwrap();
+    let (domains_b, info_b) = build_domains_for_data(&big, zone, &mb_b).unwrap();
+    assert!(info_a.total_chunks > 1);
+    assert!(info_b.total_chunks > 1);
+    assert_ne!(
+        info_a.msg_id48, info_b.msg_id48,
+        "same payload with different mailboxes must have different msg_id48"
+    );
+    assert_ne!(domains_a, domains_b);
+}
+
+#[test]
+fn multi_chunk_key_no_mailbox_vs_mailbox_no_collision() {
+    let zone = "x.t";
+    let mailbox: u64 = 0x0000AABBCCDD;
+    let mb_bytes = &mailbox.to_be_bytes()[2..8];
+    let base_data = vec![0x42u8; 300];
+    let mut crafted = base_data.clone();
+    crafted.extend_from_slice(mb_bytes);
+
+    let with_mb = BuildOptions {
+        mailbox: Some(mailbox),
+    };
+    let no_mb = BuildOptions { mailbox: None };
+    let (_, info_with) = build_domains_for_data(&base_data, zone, &with_mb).unwrap();
+    let (_, info_without) = build_domains_for_data(&crafted, zone, &no_mb).unwrap();
+    if info_with.total_chunks > 1 && info_without.total_chunks > 1 {
+        assert_ne!(
+            info_with.msg_id48, info_without.msg_id48,
+            "mailbox message must not collide with no-mailbox message whose payload ends with mailbox bytes"
+        );
+    }
+}
+
+#[test]
+fn multi_chunk_wire_msg_id_has_full_entropy() {
+    let zone = "x.t";
+    let mut data = vec![0u8; 1024];
+    for (i, b) in data.iter_mut().enumerate() {
+        *b = (i * 37 + 13) as u8;
+    }
+    let opts = BuildOptions {
+        mailbox: Some(0x0000AABBCCDD),
+    };
+    let (domains, info) = build_domains_for_data(&data, zone, &opts).unwrap();
+    assert!(info.total_chunks > 1);
+    let mid = info.msg_id48.expect("multi-chunk must have msg_id48");
+    let mid_bytes = mid.to_be_bytes();
+    // The wire sends mid_bytes[2..8]; verify those 6 bytes are not zero-padded
+    assert_ne!(
+        &mid_bytes[2..8],
+        &[0u8; 6],
+        "wire msg_id bytes must not be all zero"
+    );
+    // Decode the second domain (non-first chunk) and verify the msg_id on the wire
+    let zone_labels = validate_zone_and_labels(zone).unwrap();
+    let mut parts: Vec<&str> = domains[1].split('.').collect();
+    for _ in 0..zone_labels.len() {
+        parts.pop();
+    }
+    let b32 = parts.join("");
+    let bytes = base32_nopad_decode(&b32).expect("valid base32");
+    let (header, hdr_len) = ChunkHeader::from_bytes(&bytes).expect("valid header");
+    assert!(header.chunked);
+    // msg_id48 is the next 6 bytes after the header
+    let wire_mid = &bytes[hdr_len..hdr_len + 6];
+    assert_eq!(
+        wire_mid,
+        &mid_bytes[2..8],
+        "wire msg_id must match computed msg_id48"
+    );
+}
+
+#[test]
+fn raw_builder_multi_chunk_has_nonzero_distinct_keys() {
+    let zone = "x.t";
+    fn make_incompressible(seed: u8) -> Vec<u8> {
+        let mut v = vec![0u8; 2048];
+        for (i, b) in v.iter_mut().enumerate() {
+            *b = (i.wrapping_mul(37).wrapping_add(seed as usize)) as u8;
+        }
+        v
+    }
+    let payload_a = make_incompressible(1);
+    let payload_b = make_incompressible(2);
+    let domains_a = build_domains_for_payload(&payload_a, zone).unwrap();
+    let domains_b = build_domains_for_payload(&payload_b, zone).unwrap();
+    assert!(domains_a.len() > 1);
+    assert!(domains_b.len() > 1);
+    let extract_mid = |domains: &[String]| -> Vec<u8> {
+        let zone_labels = validate_zone_and_labels(zone).unwrap();
+        let mut parts: Vec<&str> = domains[1].split('.').collect();
+        for _ in 0..zone_labels.len() {
+            parts.pop();
+        }
+        let b32 = parts.join("");
+        let bytes = base32_nopad_decode(&b32).unwrap();
+        let (_, hdr_len) = ChunkHeader::from_bytes(&bytes).unwrap();
+        bytes[hdr_len..hdr_len + 6].to_vec()
+    };
+    let mid_a = extract_mid(&domains_a);
+    let mid_b = extract_mid(&domains_b);
+    assert_ne!(mid_a, vec![0u8; 6], "raw builder msg_id must not be zero");
+    assert_ne!(mid_b, vec![0u8; 6], "raw builder msg_id must not be zero");
+    assert_ne!(
+        mid_a, mid_b,
+        "different payloads must produce different msg_ids"
+    );
+}
