@@ -340,10 +340,10 @@ fn multi_chunk_v2_message_roundtrip() {
 // ---------------------------------------------------------------------------
 #[test]
 fn cli_ping_flag_sends_and_stores() {
-    let client = match get_bin("dnsm-client") {
+    let client = match get_bin("dnsm") {
         Some(p) => p,
         None => {
-            eprintln!("skipping: dnsm-client binary not found");
+            eprintln!("skipping: dnsm binary not found");
             return;
         }
     };
@@ -389,10 +389,10 @@ fn cli_ping_flag_sends_and_stores() {
 // ---------------------------------------------------------------------------
 #[test]
 fn cli_ping_without_mailbox_fails() {
-    let client = match get_bin("dnsm-client") {
+    let client = match get_bin("dnsm") {
         Some(p) => p,
         None => {
-            eprintln!("skipping: dnsm-client binary not found");
+            eprintln!("skipping: dnsm binary not found");
             return;
         }
     };
@@ -415,10 +415,10 @@ fn cli_ping_without_mailbox_fails() {
 // ---------------------------------------------------------------------------
 #[test]
 fn cli_ping_dont_query_prints_short_domain() {
-    let client = match get_bin("dnsm-client") {
+    let client = match get_bin("dnsm") {
         Some(p) => p,
         None => {
-            eprintln!("skipping: dnsm-client binary not found");
+            eprintln!("skipping: dnsm binary not found");
             return;
         }
     };
@@ -453,10 +453,10 @@ fn cli_ping_dont_query_prints_short_domain() {
 // ---------------------------------------------------------------------------
 #[test]
 fn cli_strips_trailing_whitespace_from_text() {
-    let client = match get_bin("dnsm-client") {
+    let client = match get_bin("dnsm") {
         Some(p) => p,
         None => {
-            eprintln!("skipping: dnsm-client binary not found");
+            eprintln!("skipping: dnsm binary not found");
             return;
         }
     };
@@ -503,10 +503,10 @@ fn cli_strips_trailing_whitespace_from_text() {
 // ---------------------------------------------------------------------------
 #[test]
 fn cli_does_not_strip_binary_payloads() {
-    let client = match get_bin("dnsm-client") {
+    let client = match get_bin("dnsm") {
         Some(p) => p,
         None => {
-            eprintln!("skipping: dnsm-client binary not found");
+            eprintln!("skipping: dnsm binary not found");
             return;
         }
     };

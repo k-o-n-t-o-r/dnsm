@@ -66,13 +66,13 @@ def _validate_mailbox(value: str) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="dnsm-client",
+        prog="dnsm",
         description="Send data via DNS queries",
         epilog=(
             "Examples:\n"
-            "  echo 'hello' | dnsm-client x.foo.bar --dont-query\n"
-            "  echo 'hello' | dnsm-client x.foo.bar --await-reply-ms 50 --delay-ms 2 --debug\n"
-            "  head -c 200000 /dev/urandom | dnsm-client x.foo.bar --resolver-ip 127.0.0.1:5353"
+            "  echo 'hello' | dnsm x.foo.bar --dont-query\n"
+            "  echo 'hello' | dnsm x.foo.bar --await-reply-ms 50 --delay-ms 2 --debug\n"
+            "  head -c 200000 /dev/urandom | dnsm x.foo.bar --resolver-ip 127.0.0.1:5353"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -166,17 +166,17 @@ def main(argv: list[str] | None = None) -> None:
     if args.ping:
         if mailbox_hex is None:
             print(
-                "dnsm-client: --ping requires --mailbox or --random-mailbox",
+                "dnsm: --ping requires --mailbox or --random-mailbox",
                 file=sys.stderr,
             )
             sys.exit(2)
         try:
             domain = dnsm.build_human_ping_domain(mailbox_hex, args.zone)
         except ValueError as e:
-            print(f"dnsm-client: {e}", file=sys.stderr)
+            print(f"dnsm: {e}", file=sys.stderr)
             sys.exit(2)
         print(
-            f"dnsm-client: zone={args.zone} ping mailbox={mailbox_hex}",
+            f"dnsm: zone={args.zone} ping mailbox={mailbox_hex}",
             file=sys.stderr,
         )
         if args.dont_query:
@@ -200,7 +200,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         domains, info = dnsm.build_domains(stdin_data, args.zone, mailbox_hex)
     except ValueError as e:
-        print(f"dnsm-client: {e}", file=sys.stderr)
+        print(f"dnsm: {e}", file=sys.stderr)
         sys.exit(2)
 
     # Set up socket
@@ -224,9 +224,9 @@ def main(argv: list[str] | None = None) -> None:
                 if args.await_reply_ms > 0:
                     sock.settimeout(args.await_reply_ms / 1000.0)
             except OSError as e:
-                print(f"dnsm-client: connect {target_str}: {e}", file=sys.stderr)
+                print(f"dnsm: connect {target_str}: {e}", file=sys.stderr)
                 sys.exit(1)
-            print(f"dnsm-client: sending via resolver {target_str}", file=sys.stderr)
+            print(f"dnsm: sending via resolver {target_str}", file=sys.stderr)
             if args.pretty:
                 print(
                     f"{_styled('[INFO]', 'cyan')} {_styled('resolver', 'cyan')} {_styled(target_str, 'cyan')}",
@@ -234,7 +234,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
         else:
             print(
-                "dnsm-client: no --resolver-ip and could not parse /etc/resolv.conf; printing hostnames",
+                "dnsm: no --resolver-ip and could not parse /etc/resolv.conf; printing hostnames",
                 file=sys.stderr,
             )
 
@@ -255,7 +255,7 @@ def main(argv: list[str] | None = None) -> None:
             print(file=sys.stderr)
     else:
         print(
-            f"dnsm-client: zone={args.zone} first_payload={info.first_payload_len} "
+            f"dnsm: zone={args.zone} first_payload={info.first_payload_len} "
             f"payload_per_chunk={info.payload_per_chunk} total_chunks={info.total_chunks}"
             + (f" mailbox={mailbox_hex}" if mailbox_hex else ""),
             file=sys.stderr,
@@ -266,7 +266,7 @@ def main(argv: list[str] | None = None) -> None:
         if sock is not None:
             pct = ((i + 1) / info.total_chunks * 100) if info.total_chunks else 100.0
             print(
-                f"dnsm-client: progress {i + 1}/{info.total_chunks} ({pct:.1f}%)",
+                f"dnsm: progress {i + 1}/{info.total_chunks} ({pct:.1f}%)",
                 file=sys.stderr,
             )
             q = _build_query(qname)
@@ -358,7 +358,7 @@ def _send_ping(domain: str, host: str, port: int, args, _styled) -> None:
         if args.await_reply_ms > 0:
             sock.settimeout(args.await_reply_ms / 1000.0)
     except OSError as e:
-        print(f"dnsm-client: connect {target_str}: {e}", file=sys.stderr)
+        print(f"dnsm: connect {target_str}: {e}", file=sys.stderr)
         sys.exit(1)
 
     q = _build_query(domain)

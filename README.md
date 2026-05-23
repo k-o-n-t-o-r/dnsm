@@ -44,7 +44,7 @@ We encode bytes into the textual labels that make up a domain name (naively, thi
 
 To receive data, pick a short zone you control (e.g., `k.dnsm.re`) and run `dnsm-server` as the authoritative nameserver for that zone. It observes incoming queries, reassembles chunks, and decodes the payload into logs or a SQLite database.
 
-On the sending side, use `dnsm-client` to generate the hostnames for arbitrary data, then trigger DNS resolution using any mechanism your environment allows (OS resolver, browser primitives, proxies, etc.). The lookups traverse recursive resolvers and eventually reach your authoritative server - delivering the message without opening an application‑layer connection.
+On the sending side, use `dnsm` to generate the hostnames for arbitrary data, then trigger DNS resolution using any mechanism your environment allows (OS resolver, browser primitives, proxies, etc.). The lookups traverse recursive resolvers and eventually reach your authoritative server - delivering the message without opening an application‑layer connection.
 
 #### Browsers
 
@@ -65,9 +65,9 @@ Download the latest release, put the binaries on your PATH, or run them in place
 #### Generating domain names from some input data:
 
 ```bash
-$ echo "hello world" | dnsm-client k.dnsm.re --random-mailbox -n
+$ echo "hello world" | dnsm k.dnsm.re --random-mailbox -n
 
-dnsm-client: zone=k.dnsm.re
+dnsm: zone=k.dnsm.re
              first_payload=141
              payload_per_chunk=141
              total_chunks=1
@@ -112,10 +112,10 @@ dnsm-server x.foo.bar --bind 0.0.0.0:5353 --respond_with 127.0.0.1 --log queries
 2. In a different terminal, stream some test data through the client so it emits DNS lookups toward the server:
 
 ```bash
-echo "hello world" | dnsm-client x.foo.bar --resolver-ip 127.0.0.1:5353
+echo "hello world" | dnsm x.foo.bar --resolver-ip 127.0.0.1:5353
 
 # You can also send binary data
-cat secrets.zip | dnsm-client x.foo.bar --resolver-ip 127.0.0.1:5353
+cat secrets.zip | dnsm x.foo.bar --resolver-ip 127.0.0.1:5353
 ```
 
 3. Watch the server log (or inspect the SQLite database) to confirm the message was received and reassembled:
@@ -228,7 +228,7 @@ Options:
 </details>
 
 <details>
-  <summary><code>dnsm-client --help</code></summary>
+  <summary><code>dnsm --help</code></summary>
 
 ```text
 Reads from stdin and emits DNS queries carrying the data, or prints
@@ -236,11 +236,11 @@ hostnames (one per chunk) when --dont-query is used.
 
 Examples:
 
-- echo 'hello' | dnsm-client x.foo.bar --dont-query
-- echo 'hello' | dnsm-client x.foo.bar --await-reply-ms 50 --delay-ms 2 --debug
-- head -c 200000 /dev/urandom | dnsm-client x.foo.bar --resolver-ip 127.0.0.1:5353
+- echo 'hello' | dnsm x.foo.bar --dont-query
+- echo 'hello' | dnsm x.foo.bar --await-reply-ms 50 --delay-ms 2 --debug
+- head -c 200000 /dev/urandom | dnsm x.foo.bar --resolver-ip 127.0.0.1:5353
 
-Usage: dnsm-client [OPTIONS] <ZONE>
+Usage: dnsm [OPTIONS] <ZONE>
 
 Arguments:
   <ZONE>
@@ -377,14 +377,14 @@ canon  = dnsm.validate_mailbox("050373323440")  # str or None
 
 ### CLI
 
-A `dnsm-client` entry point mirrors the Rust CLI:
+A `dnsm` entry point mirrors the Rust CLI:
 
 ```bash
-echo "hello world" | dnsm-client k.dnsm.re --random-mailbox -n
-echo "hello world" | dnsm-client k.dnsm.re --resolver-ip 127.0.0.1:5353 --delay-ms 2 --debug
+echo "hello world" | dnsm k.dnsm.re --random-mailbox -n
+echo "hello world" | dnsm k.dnsm.re --resolver-ip 127.0.0.1:5353 --delay-ms 2 --debug
 ```
 
-Run `dnsm-client --help` for the full option list.
+Run `dnsm --help` for the full option list.
 
 ----
 
@@ -448,7 +448,7 @@ If you prefer building `dnsm` locally:
 
 - Native binaries (release builds):
 
-  - Client: `cargo build --release --bin dnsm-client`
+  - Client: `cargo build --release --bin dnsm`
   - Server: `cargo build --release --bin dnsm-server --features sqlite`
   - WS/API: `cargo build --release --bin dnsm-ws --features "sqlite,ws-server"`
 

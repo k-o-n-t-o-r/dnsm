@@ -49,7 +49,7 @@ Repository = "https://github.com/k-o-n-t-o-r/dnsm"
 Issues = "https://github.com/k-o-n-t-o-r/dnsm/issues"
 
 [project.scripts]
-dnsm-client = "dnsm._cli:main"
+dnsm = "dnsm._cli:main"
 
 [tool.maturin]
 features = ["python"]
