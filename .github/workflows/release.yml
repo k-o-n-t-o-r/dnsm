@@ -297,8 +297,26 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          path: ./artifacts
+          path: ./artifacts/bins
+          pattern: bin-*
           merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts/wheels
+          pattern: wheel-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts/sdist
+          pattern: sdist
+          merge-multiple: true
+
+      - name: Collect release files
+        run: |
+          mkdir -p ./release
+          cp ./artifacts/bins/* ./artifacts/wheels/* ./artifacts/sdist/* ./release/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -309,9 +327,9 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            artifacts/*.tar.gz
-            artifacts/*.sha256
-            artifacts/*.whl
+            release/*.tar.gz
+            release/*.sha256
+            release/*.whl
 
   # ── PyPI ──
   publish-pypi:

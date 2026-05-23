@@ -153,7 +153,7 @@ export function Inbox() {
     )
     reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 20000)
     setStatus({ text: `Reconnecting in ${Math.round(reconnectDelayRef.current / 1000)}s...`, level: "warn" })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const connect = useCallback(async (opts?: { mailbox?: string; host?: string; replace?: boolean }) => {
@@ -224,7 +224,7 @@ export function Inbox() {
       } catch (e) {
         if (gen !== generationRef.current) return
         if (timedOut) {
-          setStatus({ text: "History fetch timed out — showing live messages only", level: "warn" })
+          setStatus({ text: "History fetch timed out - showing live messages only", level: "warn" })
         } else if (!abort.signal.aborted) {
           setStatus({ text: `Backlog fetch error: ${e}`, level: "warn" })
         }
@@ -247,7 +247,7 @@ export function Inbox() {
         if (gen !== generationRef.current) { ws.close(); return }
         setStatus(backlogOk
           ? { text: "Connected", level: "good" }
-          : { text: "Connected — history unavailable", level: "warn" })
+          : { text: "Connected - history unavailable", level: "warn" })
         reconnectDelayRef.current = 1000
       })
       ws.addEventListener("close", () => {
@@ -292,7 +292,7 @@ export function Inbox() {
       if (ws) try { ws.close() } catch { /* ignore */ }
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const routeSearch = location.search
@@ -319,7 +319,7 @@ export function Inbox() {
     setMailbox(mb)
     setHost(effectiveHost)
     setTimeout(() => connect({ mailbox: mb, host: effectiveHost, replace: true }), 0)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, routeSearch])
 
   useEffect(() => {
@@ -370,8 +370,8 @@ export function Inbox() {
 
   const statusDot = status.level === "good" ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]"
     : status.level === "warn" ? "bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.5)]"
-    : status.level === "bad" ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"
-    : "bg-muted-foreground"
+      : status.level === "bad" ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"
+        : "bg-muted-foreground"
 
   return (
     <div className="max-w-[1100px] mx-auto p-5 md:p-7">
