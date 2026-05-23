@@ -356,10 +356,10 @@ fn cli_ping_flag_sends_and_stores() {
     };
 
     let status = Command::new(&client)
+        .arg("aaaaaaaaaaaa")
+        .arg("--zone")
         .arg("x.test")
         .arg("--ping")
-        .arg("--mailbox")
-        .arg("aaaaaaaaaaaa")
         .arg("--resolver-ip")
         .arg(format!("127.0.0.1:{}", port))
         .stdin(Stdio::null())
@@ -385,10 +385,10 @@ fn cli_ping_flag_sends_and_stores() {
 }
 
 // ---------------------------------------------------------------------------
-// CLI --ping without --mailbox should fail
+// CLI --ping without mailbox succeeds (random mailbox generated)
 // ---------------------------------------------------------------------------
 #[test]
-fn cli_ping_without_mailbox_fails() {
+fn cli_ping_without_mailbox_succeeds() {
     let client = match get_bin("dnsm-client") {
         Some(p) => p,
         None => {
@@ -397,17 +397,21 @@ fn cli_ping_without_mailbox_fails() {
         }
     };
 
-    let status = Command::new(&client)
-        .arg("x.test")
+    let output = Command::new(&client)
         .arg("--ping")
         .arg("-n")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .output()
         .expect("run client");
 
-    assert!(!status.success(), "expected failure without --mailbox");
+    assert!(
+        output.status.success(),
+        "ping with random mailbox should succeed"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let domain = stdout.trim();
+    assert!(domain.ends_with(".k.dnsm.re"), "domain: {}", domain);
 }
 
 // ---------------------------------------------------------------------------
@@ -424,10 +428,8 @@ fn cli_ping_dont_query_prints_short_domain() {
     };
 
     let output = Command::new(&client)
-        .arg("k.dnsm.re")
-        .arg("--ping")
-        .arg("--mailbox")
         .arg("000000000042")
+        .arg("--ping")
         .arg("-n")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -469,11 +471,11 @@ fn cli_strips_trailing_whitespace_from_text() {
     };
 
     let mut child = Command::new(&client)
+        .arg("bbbbbbbbbbbb")
+        .arg("--zone")
         .arg("x.test")
         .arg("--resolver-ip")
         .arg(format!("127.0.0.1:{}", port))
-        .arg("--mailbox")
-        .arg("bbbbbbbbbbbb")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -521,11 +523,11 @@ fn cli_does_not_strip_binary_payloads() {
     let payload: &[u8] = &[0xFF, 0x01, 0x0A];
 
     let mut child = Command::new(&client)
+        .arg("cccccccccccc")
+        .arg("--zone")
         .arg("x.test")
         .arg("--resolver-ip")
         .arg(format!("127.0.0.1:{}", port))
-        .arg("--mailbox")
-        .arg("cccccccccccc")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

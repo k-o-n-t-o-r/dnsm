@@ -435,6 +435,7 @@ fn log_event(log: &mut BufWriter<std::fs::File>, now: u128, event: &str, rest_fi
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn try_handle_dnsm(
     full_domain: &str,
     cfg: &crate::ServerCfg,

@@ -376,13 +376,7 @@ pub fn build_domains_for_payload(payload: &[u8], zone: &str) -> Result<Vec<Strin
             !is_single,
             false,
         );
-        let extras: Vec<u8> = if !is_single && is_first {
-            vec![0; 6]
-        } else if !is_single {
-            vec![0; 6]
-        } else {
-            Vec::new()
-        };
+        let extras: Vec<u8> = if !is_single { vec![0; 6] } else { Vec::new() };
         let domain = build_domain(&header, &extras, data, &zone_labels);
         out.push(domain);
         sent = end;

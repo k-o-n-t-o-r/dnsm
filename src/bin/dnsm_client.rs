@@ -3,7 +3,7 @@ use console::style;
 use dnsm::{BuildInfo, BuildOptions, build_domains_for_data, build_human_ping_domain};
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
-use std::net::{Ipv6Addr, UdpSocket};
+use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Parser)]
@@ -15,14 +15,20 @@ use std::str::FromStr;
                   \n\
                   Examples:\n\
                   \n\
-                  - echo 'hello' | dnsm-client x.foo.bar --dont-query\n\
-                  - echo 'hello' | dnsm-client x.foo.bar --await-reply-ms 50 --delay-ms 2 --debug\n\
-    - head -c 200000 /dev/urandom | dnsm-client x.foo.bar --resolver-ip 127.0.0.1:5353",
+                  - echo 'hello' | dnsm-client\n\
+                  - echo 'hello' | dnsm-client abcdef123456\n\
+                  - echo 'hello' | dnsm-client abcdef123456 --zone x.foo.bar -n\n\
+                  - dnsm-client --ping\n\
+    - head -c 200000 /dev/urandom | dnsm-client --resolver-ip 127.0.0.1:5353",
     disable_help_subcommand = true
 )]
 struct ClientArgs {
-    /// Zone/apex the payload labels are appended to (required).
-    #[arg(value_name = "ZONE")]
+    /// Mailbox ID (exactly 12 hex chars). Random if omitted.
+    #[arg(value_name = "MAILBOX", value_parser = parse_mailbox_hex12_arg)]
+    mailbox: Option<String>,
+
+    /// Zone/apex the payload labels are appended to
+    #[arg(long = "zone", value_name = "ZONE", default_value = "k.dnsm.re")]
     zone: String,
 
     /// Send to this resolver (default: first nameserver in /etc/resolv.conf)
@@ -34,7 +40,7 @@ struct ClientArgs {
     dont_query: bool,
 
     /// Wait up to this many ms for a reply to each query (0 disables)
-    #[arg(long = "await-reply-ms", value_name = "MS", default_value_t = 0)]
+    #[arg(long = "await-reply-ms", value_name = "MS", default_value_t = 3000)]
     await_reply_ms: u64,
 
     /// Sleep this many ms between queries
@@ -45,15 +51,11 @@ struct ClientArgs {
     #[arg(long = "sent-log", value_name = "PATH")]
     sent_log: Option<String>,
 
-    /// Optional mailbox ID (exactly 12 hex chars, no 0x)
-    #[arg(long = "mailbox", value_name = "HEX12", value_parser = parse_mailbox_hex12_arg)]
-    mailbox: Option<String>,
-
-    /// Generate a random mailbox ID (conflicts with --mailbox)
+    /// Generate a random mailbox ID (conflicts with positional MAILBOX)
     #[arg(long = "random-mailbox", action = ArgAction::SetTrue, conflicts_with = "mailbox")]
     random_mailbox: bool,
 
-    /// Send a minimal ping (no message content, mailbox required).
+    /// Send a minimal ping (no message content).
     /// Produces `<mailbox>.<zone>` (e.g. bf1c3a4a3694.k.dnsm.re).
     #[arg(long = "ping", action = ArgAction::SetTrue)]
     ping: bool,
@@ -79,11 +81,81 @@ fn parse_mailbox_hex12_arg(v: &str) -> Result<String, String> {
     let s = v.trim();
     if s.len() != 12 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!(
-            "invalid --mailbox '{}': expected exactly 12 hex chars (no 0x)",
+            "invalid mailbox '{}': expected exactly 12 hex chars (no 0x)",
             v
         ));
     }
     Ok(s.to_ascii_lowercase())
+}
+
+struct DnsResponse {
+    id: u16,
+    rcode: u8,
+    answer_ip: Option<Ipv4Addr>,
+}
+
+fn skip_dns_name(buf: &[u8], len: usize, start: usize) -> Option<usize> {
+    let mut off = start;
+    loop {
+        if off >= len {
+            return None;
+        }
+        let b = buf[off];
+        if b == 0 {
+            return Some(off + 1);
+        }
+        if b & 0xC0 == 0xC0 {
+            if off + 2 > len {
+                return None;
+            }
+            return Some(off + 2);
+        }
+        off += 1 + b as usize;
+    }
+}
+
+fn parse_dns_response(buf: &[u8], len: usize) -> Option<DnsResponse> {
+    if len < 12 {
+        return None;
+    }
+    let id = u16::from_be_bytes([buf[0], buf[1]]);
+    let flags = u16::from_be_bytes([buf[2], buf[3]]);
+    let rcode = (flags & 0x000F) as u8;
+    let ancount = u16::from_be_bytes([buf[6], buf[7]]);
+
+    let mut off = skip_dns_name(buf, len, 12)?;
+    if off + 4 > len {
+        return None;
+    }
+    off += 4; // QTYPE + QCLASS
+
+    let mut answer_ip = None;
+    for _ in 0..ancount {
+        off = skip_dns_name(buf, len, off)?;
+        if off + 10 > len {
+            break;
+        }
+        let rtype = u16::from_be_bytes([buf[off], buf[off + 1]]);
+        let rdlen = u16::from_be_bytes([buf[off + 8], buf[off + 9]]) as usize;
+        off += 10;
+        if off + rdlen > len {
+            break;
+        }
+        if rtype == 1 && rdlen == 4 && answer_ip.is_none() {
+            answer_ip = Some(Ipv4Addr::new(
+                buf[off],
+                buf[off + 1],
+                buf[off + 2],
+                buf[off + 3],
+            ));
+        }
+        off += rdlen;
+    }
+    Some(DnsResponse {
+        id,
+        rcode,
+        answer_ip,
+    })
 }
 
 fn build_query_from_domain(domain: &str) -> Vec<u8> {
@@ -170,7 +242,7 @@ fn main() -> io::Result<()> {
         delay_ms,
         sent_log,
         mailbox: mailbox_arg,
-        random_mailbox,
+        random_mailbox: _,
         ping,
         debug,
         pretty_stdout,
@@ -183,48 +255,47 @@ fn main() -> io::Result<()> {
         console::set_colors_enabled_stderr(false);
     }
 
-    let mailbox_hex: Option<String> = if random_mailbox {
-        let v = fastrand::u64(..) & 0x0000_FFFF_FFFF_FFFF;
-        Some(format!("{:012x}", v))
-    } else {
-        mailbox_arg
+    let mailbox_hex: String = match mailbox_arg {
+        Some(mb) => mb,
+        None => {
+            let mut buf = [0u8; 6];
+            std::fs::File::open("/dev/urandom")
+                .and_then(|mut f| {
+                    use std::io::Read;
+                    f.read_exact(&mut buf)
+                })
+                .unwrap_or_else(|_| {
+                    let v = fastrand::u64(..) & 0x0000_FFFF_FFFF_FFFF;
+                    buf.copy_from_slice(&v.to_be_bytes()[2..]);
+                });
+            format!(
+                "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]
+            )
+        }
     };
 
-    let mailbox_u64: Option<u64> = match mailbox_hex.as_deref() {
-        None => None,
-        Some(s) => match u64::from_str_radix(s, 16) {
-            Ok(v) => Some(v),
-            Err(_) => {
-                eprintln!(
-                    "dnsm-client: invalid --mailbox '{}': must be 12 hex chars",
-                    s
-                );
-                std::process::exit(2);
-            }
-        },
+    let mailbox_u64: u64 = match u64::from_str_radix(&mailbox_hex, 16) {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!(
+                "dnsm-client: invalid mailbox '{}': must be 12 hex chars",
+                mailbox_hex
+            );
+            std::process::exit(2);
+        }
     };
 
     // --- Ping mode ---
     if ping {
-        let mb_hex_str = match mailbox_hex.as_deref() {
-            Some(s) => s,
-            None => {
-                eprintln!("dnsm-client: --ping requires --mailbox or --random-mailbox");
-                std::process::exit(2);
-            }
-        };
-        let domain = match build_human_ping_domain(mb_hex_str, &zone) {
+        let domain = match build_human_ping_domain(&mailbox_hex, &zone) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("dnsm-client: {}", e);
                 std::process::exit(2);
             }
         };
-        eprintln!(
-            "dnsm-client: zone={} ping mailbox={}",
-            zone,
-            mailbox_hex.as_deref().unwrap_or("?")
-        );
+        eprintln!("dnsm-client: zone={} ping mailbox={}", zone, mailbox_hex);
         if dont_query {
             println!("{}", domain);
         } else {
@@ -244,39 +315,55 @@ fn main() -> io::Result<()> {
                 let q = build_query_from_domain(&domain);
                 let id = u16::from_be_bytes([q[0], q[1]]);
                 s.send(&q)?;
-                if pretty_stdout {
-                    eprintln!(
-                        "{} ping {} id={}",
-                        style("[SEND]").green().bold(),
-                        domain,
-                        id
-                    );
-                }
                 if await_reply_ms > 0 {
+                    let mut ack_ok = false;
+                    let mut resp_ip: Option<Ipv4Addr> = None;
                     let mut buf = [0u8; 512];
                     match s.recv(&mut buf) {
-                        Ok(n) if n >= 2 => {
-                            let rid = u16::from_be_bytes([buf[0], buf[1]]);
-                            if rid == id && pretty_stdout {
-                                eprintln!("{} id={}", style("[ACK]").green().bold(), id);
+                        Ok(n) if n >= 12 => {
+                            if let Some(resp) = parse_dns_response(&buf, n)
+                                && resp.id == id
+                                && resp.rcode == 0
+                            {
+                                ack_ok = true;
+                                resp_ip = resp.answer_ip;
                             }
                         }
-                        _ => {
-                            if pretty_stdout {
-                                eprintln!(
-                                    "{} id={} after={}ms",
-                                    style("[TIMEOUT]").yellow().bold(),
-                                    id,
-                                    await_reply_ms
-                                );
-                            }
-                        }
+                        _ => {}
                     }
+                    let ip_str = resp_ip.map(|ip| format!(" ip={}", ip)).unwrap_or_default();
+                    if ack_ok {
+                        if pretty_stdout {
+                            println!(
+                                "{} {}{}",
+                                style("[OK]").green().bold(),
+                                domain,
+                                style(&ip_str).dim()
+                            );
+                        } else {
+                            println!("{} ok{}", domain, ip_str);
+                        }
+                    } else if pretty_stdout {
+                        println!(
+                            "{} {} after={}ms",
+                            style("[TIMEOUT]").yellow().bold(),
+                            domain,
+                            await_reply_ms
+                        );
+                    } else {
+                        println!("{} timeout after={}ms", domain, await_reply_ms);
+                    }
+                } else if pretty_stdout {
+                    println!("{} {}", style("[SEND]").green().bold(), domain);
+                } else {
+                    println!("{} sent", domain);
                 }
             } else {
-                // Fallback: just print
                 println!("{}", domain);
             }
+        }
+        if zone == "k.dnsm.re" {
+            eprintln!("\nInbox: https://dnsm.re/#/inbox/{}", mailbox_hex);
         }
         return Ok(());
     }
@@ -293,7 +380,7 @@ fn main() -> io::Result<()> {
     }
 
     let opts = BuildOptions {
-        mailbox: mailbox_u64,
+        mailbox: Some(mailbox_u64),
     };
     let (domains, info): (Vec<String>, BuildInfo) =
         match build_domains_for_data(&stdin_data, &zone, &opts) {
@@ -304,7 +391,6 @@ fn main() -> io::Result<()> {
             }
         };
 
-    // If not --dont-query, set up UDP socket to either --resolver-ip or system resolver
     let mut sock: Option<UdpSocket> = None;
     let mut logfile: Option<io::BufWriter<std::fs::File>> = None;
     if let Some(path) = &sent_log {
@@ -354,44 +440,25 @@ fn main() -> io::Result<()> {
             style("total_chunks").dim(),
             style(info.total_chunks).cyan(),
         );
-        if let Some(ref s) = mailbox_hex {
-            eprintln!(
-                "{} {}={}  {} {}",
-                style("[INFO]").cyan().bold(),
-                style("mailbox").dim(),
-                style(s).cyan(),
-                style("View inbox at").white(),
-                style(format!("https://dnsm.re/#/inbox/{}", s)).bold()
-            );
-            eprintln!();
-        }
+        eprintln!(
+            "{} {}={}  {} {}",
+            style("[INFO]").cyan().bold(),
+            style("mailbox").dim(),
+            style(&mailbox_hex).cyan(),
+            style("View inbox at").white(),
+            style(format!("https://dnsm.re/#/inbox/{}", mailbox_hex)).bold()
+        );
+        eprintln!();
     } else {
         eprintln!(
-            "dnsm-client: zone={} first_payload={} payload_per_chunk={} total_chunks={}{}",
-            zone,
-            info.first_payload_len,
-            info.payload_per_chunk,
-            info.total_chunks,
-            match mailbox_hex.as_deref() {
-                Some(s) => format!(" mailbox={}", s),
-                None => String::new(),
-            }
+            "dnsm-client: zone={} first_payload={} payload_per_chunk={} total_chunks={} mailbox={}",
+            zone, info.first_payload_len, info.payload_per_chunk, info.total_chunks, mailbox_hex
         );
     }
 
     for (i, qname) in domains.iter().enumerate() {
         let remaining: u16 = (info.total_chunks - 1 - i) as u16;
         if let Some(ref s) = sock {
-            let sent_chunks = i + 1;
-            let pct = if info.total_chunks == 0 {
-                100.0
-            } else {
-                (sent_chunks as f64 / info.total_chunks as f64) * 100.0
-            };
-            eprintln!(
-                "dnsm-client: progress {}/{} ({:.1}%)",
-                sent_chunks, info.total_chunks, pct
-            );
             let q = build_query_from_domain(qname);
             let id = u16::from_be_bytes([q[0], q[1]]);
             if debug {
@@ -404,45 +471,53 @@ fn main() -> io::Result<()> {
                     id
                 );
             }
-            if pretty_stdout {
-                eprintln!(
-                    "{} idx={} remaining={} qname_len={} labels={} id={}",
-                    style("[SEND]").green().bold(),
-                    i,
-                    remaining,
-                    qname.len(),
-                    qname.split('.').count(),
-                    id
-                );
-            }
             s.send(&q)?;
 
             let mut ack_ok = false;
+            let mut resp_ip: Option<Ipv4Addr> = None;
             if await_reply_ms > 0 {
                 let mut buf = [0u8; 512];
                 match s.recv(&mut buf) {
-                    Ok(n) if n >= 2 => {
-                        let rid = u16::from_be_bytes([buf[0], buf[1]]);
-                        if rid == id {
+                    Ok(n) if n >= 12 => {
+                        if let Some(resp) = parse_dns_response(&buf, n)
+                            && resp.id == id
+                            && resp.rcode == 0
+                        {
                             ack_ok = true;
+                            resp_ip = resp.answer_ip;
                         }
                     }
                     _ => {}
                 }
             }
 
-            if pretty_stdout && await_reply_ms > 0 {
+            if await_reply_ms > 0 {
+                let ip_str = resp_ip.map(|ip| format!(" ip={}", ip)).unwrap_or_default();
                 if ack_ok {
-                    eprintln!("{} id={} idx={}", style("[ACK]").green().bold(), id, i);
-                } else {
-                    eprintln!(
-                        "{} id={} idx={} after={}ms",
+                    if pretty_stdout {
+                        println!(
+                            "{} {}{}",
+                            style("[OK]").green().bold(),
+                            qname,
+                            style(&ip_str).dim()
+                        );
+                    } else {
+                        println!("{} ok{}", qname, ip_str);
+                    }
+                } else if pretty_stdout {
+                    println!(
+                        "{} {} after={}ms",
                         style("[TIMEOUT]").yellow().bold(),
-                        id,
-                        i,
+                        qname,
                         await_reply_ms
                     );
+                } else {
+                    println!("{} timeout after={}ms", qname, await_reply_ms);
                 }
+            } else if pretty_stdout {
+                println!("{} {}", style("[SEND]").green().bold(), qname);
+            } else {
+                println!("{} sent", qname);
             }
 
             if let Some(ref mut lf) = logfile {
@@ -488,6 +563,10 @@ fn main() -> io::Result<()> {
         } else {
             println!("{}", qname);
         }
+    }
+
+    if zone == "k.dnsm.re" {
+        eprintln!("\nInbox: https://dnsm.re/#/inbox/{}", mailbox_hex);
     }
 
     Ok(())
