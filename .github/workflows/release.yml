@@ -249,6 +249,59 @@ jobs:
       - name: Verify crate packages correctly
         run: cargo publish --dry-run
 
+  # ── npm packages (assemble from binary artifacts) ──
+  build-npm:
+    name: npm packages
+    needs: [version, build-binaries]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-dnsm-client-x86_64-unknown-linux-musl
+          path: ./artifacts
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-dnsm-client-aarch64-unknown-linux-musl
+          path: ./artifacts
+
+      - name: Assemble npm packages
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euxo pipefail
+
+          # linux-x64
+          mkdir -p npm/linux-x64/bin
+          tar xzf "artifacts/dnsm-client-${VERSION}-x86_64-unknown-linux-musl.tar.gz" -C npm/linux-x64/bin
+          chmod +x npm/linux-x64/bin/dnsm-client
+
+          # linux-arm64
+          mkdir -p npm/linux-arm64/bin
+          tar xzf "artifacts/dnsm-client-${VERSION}-aarch64-unknown-linux-musl.tar.gz" -C npm/linux-arm64/bin
+          chmod +x npm/linux-arm64/bin/dnsm-client
+
+          # Stamp version in all package.json files
+          for pkg in npm/dnsm npm/linux-x64 npm/linux-arm64; do
+            jq --arg v "$VERSION" '.version = $v' "$pkg/package.json" > tmp.json && mv tmp.json "$pkg/package.json"
+          done
+          # Update optionalDependencies versions in wrapper
+          jq --arg v "$VERSION" '.optionalDependencies |= with_entries(.value = $v)' npm/dnsm/package.json > tmp.json && mv tmp.json npm/dnsm/package.json
+
+          cp README.md npm/dnsm/README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-packages
+          path: npm/
+
   # ── WASM + web build ──
   build-web:
     name: wasm + web
@@ -290,7 +343,7 @@ jobs:
   # ── GitHub Release ──
   release:
     name: github release
-    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web, build-npm]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -334,7 +387,7 @@ jobs:
   # ── PyPI ──
   publish-pypi:
     name: publish pypi
-    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web, build-npm]
     runs-on: ubuntu-22.04
     permissions:
       id-token: write
@@ -352,7 +405,7 @@ jobs:
   # ── Crates.io ──
   publish-crate:
     name: publish crates.io
-    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web, build-npm]
     runs-on: ubuntu-22.04
     permissions:
       id-token: write
@@ -372,7 +425,7 @@ jobs:
   # ── Docker push + manifests ──
   publish-docker:
     name: push docker images
-    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web, build-npm]
     runs-on: ubuntu-22.04
     strategy:
       matrix:
@@ -438,6 +491,33 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+  # ── npm ──
+  publish-npm:
+    name: publish npm
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web, build-npm]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-packages
+          path: npm/
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish platform packages then wrapper
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euxo pipefail
+          for pkg in npm/linux-x64 npm/linux-arm64; do
+            npm publish "$pkg" --access public
+          done
+          npm publish npm/dnsm --access public
 
   # ── Docker multi-arch manifests ──
   docker-manifests:

@@ -39,6 +39,10 @@ dnsm.db
 dnsm.sqlite
 dnsm-*.tar.gz*
 
+# npm platform binaries (populated by CI)
+npm/linux-x64/bin/
+npm/linux-arm64/bin/
+
 # Python
 __pycache__/
 *.egg-info/

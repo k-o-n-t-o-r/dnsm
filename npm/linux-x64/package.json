@@ -1,0 +1,13 @@
+{
+  "name": "@k-o-n-t-o-r/dnsm-linux-x64",
+  "version": "0.2.0",
+  "description": "dnsm-client linux x64 binary",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/k-o-n-t-o-r/dnsm"
+  },
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["bin/dnsm-client"]
+}

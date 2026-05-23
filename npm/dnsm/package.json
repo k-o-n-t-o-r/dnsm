@@ -1,0 +1,20 @@
+{
+  "name": "@k-o-n-t-o-r/dnsm",
+  "version": "0.2.0",
+  "description": "Toolkit for covert data exfiltration using DNS",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/k-o-n-t-o-r/dnsm"
+  },
+  "homepage": "https://dnsm.re",
+  "keywords": ["gdpr", "itsec", "security", "exfiltration", "telemetry", "dns"],
+  "bin": {
+    "dnsm-client": "bin/dnsm-client"
+  },
+  "files": ["bin/dnsm-client", "README.md"],
+  "optionalDependencies": {
+    "@k-o-n-t-o-r/dnsm-linux-x64": "0.2.0",
+    "@k-o-n-t-o-r/dnsm-linux-arm64": "0.2.0"
+  }
+}
