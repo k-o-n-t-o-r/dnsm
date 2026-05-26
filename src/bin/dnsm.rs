@@ -8,16 +8,16 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "dnsm-client",
+    name = "dnsm",
     about = "Send data via DNS queries",
     long_about = "Reads from stdin and emits DNS queries carrying the data, or prints\n\
                   hostnames (one per chunk) when --dont-query is used.\n\
                   \n\
                   Examples:\n\
                   \n\
-                  - echo 'hello' | dnsm-client x.foo.bar --dont-query\n\
-                  - echo 'hello' | dnsm-client x.foo.bar --await-reply-ms 50 --delay-ms 2 --debug\n\
-    - head -c 200000 /dev/urandom | dnsm-client x.foo.bar --resolver-ip 127.0.0.1:5353",
+                  - echo 'hello' | dnsm x.foo.bar --dont-query\n\
+                  - echo 'hello' | dnsm x.foo.bar --await-reply-ms 50 --delay-ms 2 --debug\n\
+    - head -c 200000 /dev/urandom | dnsm x.foo.bar --resolver-ip 127.0.0.1:5353",
     disable_help_subcommand = true
 )]
 struct ClientArgs {
@@ -196,7 +196,7 @@ fn main() -> io::Result<()> {
             Ok(v) => Some(v),
             Err(_) => {
                 eprintln!(
-                    "dnsm-client: invalid --mailbox '{}': must be 12 hex chars",
+                    "dnsm: invalid --mailbox '{}': must be 12 hex chars",
                     s
                 );
                 std::process::exit(2);
@@ -209,19 +209,19 @@ fn main() -> io::Result<()> {
         let mb_hex_str = match mailbox_hex.as_deref() {
             Some(s) => s,
             None => {
-                eprintln!("dnsm-client: --ping requires --mailbox or --random-mailbox");
+                eprintln!("dnsm: --ping requires --mailbox or --random-mailbox");
                 std::process::exit(2);
             }
         };
         let domain = match build_human_ping_domain(mb_hex_str, &zone) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("dnsm-client: {}", e);
+                eprintln!("dnsm: {}", e);
                 std::process::exit(2);
             }
         };
         eprintln!(
-            "dnsm-client: zone={} ping mailbox={}",
+            "dnsm: zone={} ping mailbox={}",
             zone,
             mailbox_hex.as_deref().unwrap_or("?")
         );
@@ -299,7 +299,7 @@ fn main() -> io::Result<()> {
         match build_domains_for_data(&stdin_data, &zone, &opts) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("dnsm-client: {}", e);
+                eprintln!("dnsm: {}", e);
                 std::process::exit(2);
             }
         };
@@ -325,7 +325,7 @@ fn main() -> io::Result<()> {
             if await_reply_ms > 0 {
                 s.set_read_timeout(Some(std::time::Duration::from_millis(await_reply_ms)))?;
             }
-            eprintln!("dnsm-client: sending via resolver {}", target);
+            eprintln!("dnsm: sending via resolver {}", target);
             if pretty_stdout {
                 eprintln!(
                     "{} {}",
@@ -336,7 +336,7 @@ fn main() -> io::Result<()> {
             sock = Some(s);
         } else {
             eprintln!(
-                "dnsm-client: no --resolver-ip and could not parse /etc/resolv.conf; printing hostnames"
+                "dnsm: no --resolver-ip and could not parse /etc/resolv.conf; printing hostnames"
             );
         }
     }
@@ -367,7 +367,7 @@ fn main() -> io::Result<()> {
         }
     } else {
         eprintln!(
-            "dnsm-client: zone={} first_payload={} payload_per_chunk={} total_chunks={}{}",
+            "dnsm: zone={} first_payload={} payload_per_chunk={} total_chunks={}{}",
             zone,
             info.first_payload_len,
             info.payload_per_chunk,
@@ -389,7 +389,7 @@ fn main() -> io::Result<()> {
                 (sent_chunks as f64 / info.total_chunks as f64) * 100.0
             };
             eprintln!(
-                "dnsm-client: progress {}/{} ({:.1}%)",
+                "dnsm: progress {}/{} ({:.1}%)",
                 sent_chunks, info.total_chunks, pct
             );
             let q = build_query_from_domain(qname);
@@ -494,5 +494,5 @@ fn main() -> io::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "dnsm_client/tests.rs"]
+#[path = "dnsm/tests.rs"]
 mod tests;

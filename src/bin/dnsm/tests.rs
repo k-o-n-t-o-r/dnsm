@@ -3,7 +3,7 @@ use clap::error::ErrorKind;
 
 #[test]
 fn help_flag_triggers_help() {
-    let res = ClientArgs::try_parse_from(["dnsm-client", "--help"]);
+    let res = ClientArgs::try_parse_from(["dnsm", "--help"]);
     assert!(res.is_err());
     let e = res.unwrap_err();
     assert_eq!(e.kind(), ErrorKind::DisplayHelp);
@@ -12,7 +12,7 @@ fn help_flag_triggers_help() {
 #[test]
 fn parse_ok_with_delays() {
     let args = ClientArgs::try_parse_from([
-        "dnsm-client",
+        "dnsm",
         "example.com",
         "--delay-ms",
         "10",
@@ -30,7 +30,7 @@ fn parse_ok_with_delays() {
 
 #[test]
 fn random_mailbox_flag_sets_field() {
-    let args = ClientArgs::try_parse_from(["dnsm-client", "example.com", "--random-mailbox"])
+    let args = ClientArgs::try_parse_from(["dnsm", "example.com", "--random-mailbox"])
         .expect("should parse");
     assert!(args.random_mailbox);
     assert!(args.mailbox.is_none());
@@ -39,7 +39,7 @@ fn random_mailbox_flag_sets_field() {
 #[test]
 fn random_mailbox_conflicts_with_mailbox() {
     let res = ClientArgs::try_parse_from([
-        "dnsm-client",
+        "dnsm",
         "example.com",
         "--mailbox",
         "abcdef123456",

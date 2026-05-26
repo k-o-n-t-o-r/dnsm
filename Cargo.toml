@@ -67,8 +67,8 @@ fastrand = "2.4.1"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 
 [[bin]]
-name = "dnsm-client"
-path = "src/bin/dnsm_client.rs"
+name = "dnsm"
+path = "src/bin/dnsm.rs"
 required-features = ["native-cli"]
 
 [[bin]]
