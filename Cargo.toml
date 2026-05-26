@@ -47,7 +47,7 @@ pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
 
 [lib]
 name = "dnsm"
-crate-type = ["rlib"]
+crate-type = ["rlib", "cdylib"]
 
 [features]
 default = ["native-cli"]
