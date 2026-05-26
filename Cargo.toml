@@ -27,7 +27,7 @@ clap = { version = "4.6.1", features = [
 console = { version = "0.16.3", optional = true }
 fastrand = { version = "2.4.1", optional = true }
 
-rusqlite = { version = "0.39.0", features = ["bundled"], optional = true }
+rusqlite = { version = "0.40.0", features = ["bundled"], optional = true }
 tokio = { version = "1.52.3", features = [
     "macros",
     "sync",
@@ -70,7 +70,7 @@ ws-server = [
 
 [dev-dependencies]
 fastrand = "2.4.1"
-rusqlite = { version = "0.39.0", features = ["bundled"] }
+rusqlite = { version = "0.40.0", features = ["bundled"] }
 
 [[bin]]
 name = "dnsm"
