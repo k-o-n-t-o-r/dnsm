@@ -11,6 +11,7 @@
 <p>
   <a href="https://crates.io/crates/dnsm"><img alt="crates.io" src="https://img.shields.io/crates/v/dnsm.svg"></a>
   <a href="https://pypi.org/project/dnsm"><img alt="PyPI" src="https://img.shields.io/pypi/v/dnsm.svg"></a>
+  <a href="https://www.npmjs.com/package/@k-o-n-t-o-r/dnsm"><img alt="npm" src="https://img.shields.io/npm/v/@k-o-n-t-o-r/dnsm.svg"></a>
   <img alt="Rust" src="https://img.shields.io/badge/Rust-stable-orange?logo=rust">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.9+-blue?logo=python&logoColor=white">
 </p>
@@ -50,14 +51,13 @@ echo "hello" | dnsm a1b2c3d4e5f6 -n
 
 ### Install
 
-Download the latest [release](https://github.com/k-o-n-t-o-r/dnsm/releases), or build from source:
-
 ```bash
-cargo build --release --bin dnsm
-cargo build --release --bin dnsm-server --features sqlite
+cargo install dnsm                        # Rust (client binary)
+pip install dnsm                          # Python
+npm install -g @k-o-n-t-o-r/dnsm         # Node.js (Linux/macOS, x64/arm64)
 ```
 
-Python: `pip install dnsm`
+Or download pre-built binaries from the latest [release](https://github.com/k-o-n-t-o-r/dnsm/releases).
 
 <div align="center">
  <img src="https://raw.githubusercontent.com/k-o-n-t-o-r/dnsm/master/static/screenshots/combined_inbox_browser.png" />
@@ -241,11 +241,11 @@ Options:
       --debug
           Verbose progress to stderr
 
-  -p, --pretty
-          Print colored send progress to stderr (does not affect --dont-query output)
+  -p, --plain
+          Suppress colored progress output (plain text only)
 
       --no-color
-          Disable ANSI colors even when --pretty is used
+          Disable ANSI colors
 
       --tagged-log
           Also write bracketed tags to --sent-log
@@ -289,7 +289,7 @@ const pingHost = ping_domain(mailbox, zone);
 for (const h of domainsWithMbx) new Image().src = "https://" + h;
 ```
 
-See [BrowserTest.svelte](web/src/routes/BrowserTest.svelte) for many in-browser resolution methods and usage examples.
+See [BrowserTest.tsx](web/src/pages/BrowserTest.tsx) for many in-browser resolution methods and usage examples.
 
 Notes:
 
@@ -308,7 +308,7 @@ Native Python bindings powered by PyO3. The same behavior as the Rust CLI, with 
 pip install dnsm
 ```
 
-Wheels are published for Linux x86_64 and aarch64 (CPython 3.9 to 3.13).
+Wheels are published for Linux and macOS (x86_64 and arm64, CPython 3.9 to 3.14).
 
 ### Library usage
 
