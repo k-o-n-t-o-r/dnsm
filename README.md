@@ -21,29 +21,36 @@
 Encode data into DNS queries. Retrieve it on a server you control. Works from firewalled networks, CI runners, browsers -- anywhere DNS resolves.
 
 ```bash
-# Send "hello world" to the public dnsm instance (k.dnsm.re)
+# Send "hello world" via DNS to our public instance
 echo "hello world" | dnsm
-
-# Retrieve the message via DNS TXT record
-dig @dnsm.re <mailbox>.m.dnsm.re TXT +tcp +short
 ```
 
-That's it. The client LZMA-compresses your input, encodes it into DNS labels, and triggers lookups that carry the data to the authoritative server. No TCP connection, no HTTP -- just DNS.
+The client prints a mailbox ID (e.g. `f8925edd7f13`). Open your inbox in the browser to see the message arrive:
 
-### Try it right now
+> **https://dnsm.re/#/inbox/f8925edd7f13** (replace with your mailbox ID)
+
+Or retrieve it via DNS:
 
 ```bash
-# 1. Generate domain names without sending (inspect what gets encoded)
+dig @dnsm.re f8925edd7f13.m.dnsm.re TXT +tcp +short
+```
+
+That's it. No TCP connection, no HTTP -- just DNS. The client LZMA-compresses your input, encodes it into DNS labels, and lets recursive resolvers carry the data to the server.
+
+### More examples
+
+```bash
+# Generate domain names without sending (inspect what gets encoded)
 echo "secret message" | dnsm -n
 
-# 2. Send data and get a mailbox ID back
-echo "hello world" | dnsm
-
-# 3. Send binary data
+# Send binary data
 cat secrets.zip | dnsm
 
-# 4. Use an explicit mailbox ID
-echo "hello" | dnsm a1b2c3d4e5f6 -n
+# Use an explicit mailbox ID
+echo "hello" | dnsm a1b2c3d4e5f6
+
+# Plain output (no colors)
+echo "hello" | dnsm -p
 ```
 
 > [!NOTE]

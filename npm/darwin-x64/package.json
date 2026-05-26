@@ -1,13 +1,19 @@
 {
   "name": "@k-o-n-t-o-r/dnsm-darwin-x64",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "dnsm macOS x64 binary",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/k-o-n-t-o-r/dnsm"
   },
-  "os": ["darwin"],
-  "cpu": ["x64"],
-  "files": ["bin/dnsm"]
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/dnsm"
+  ]
 }

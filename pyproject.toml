@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dnsm"
-version = "0.2.0"
+version = "0.2.1"
 description = "DNS data exfiltration toolkit - Python bindings"
 requires-python = ">=3.9"
 authors = [{ email = "kontor@dnsm.re" }]
