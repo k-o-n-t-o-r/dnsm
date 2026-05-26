@@ -64,11 +64,11 @@ struct ClientArgs {
     #[arg(long = "debug", action = ArgAction::SetTrue)]
     debug: bool,
 
-    /// Print colored send progress to stderr (does not affect --dont-query output)
-    #[arg(short = 'p', long = "pretty", action = ArgAction::SetTrue)]
-    pretty_stdout: bool,
+    /// Suppress colored progress output (plain text only)
+    #[arg(short = 'p', long = "plain", action = ArgAction::SetTrue)]
+    plain: bool,
 
-    /// Disable ANSI colors even when --pretty is used
+    /// Disable ANSI colors
     #[arg(long = "no-color", action = ArgAction::SetTrue)]
     no_color: bool,
 
@@ -245,7 +245,7 @@ fn main() -> io::Result<()> {
         random_mailbox: _,
         ping,
         debug,
-        pretty_stdout,
+        plain,
         no_color,
         tagged_log,
     } = ClientArgs::parse();
@@ -333,7 +333,7 @@ fn main() -> io::Result<()> {
                     }
                     let ip_str = resp_ip.map(|ip| format!(" ip={}", ip)).unwrap_or_default();
                     if ack_ok {
-                        if pretty_stdout {
+                        if !plain {
                             println!(
                                 "{} {}{}",
                                 style("[OK]").green().bold(),
@@ -343,7 +343,7 @@ fn main() -> io::Result<()> {
                         } else {
                             println!("{} ok{}", domain, ip_str);
                         }
-                    } else if pretty_stdout {
+                    } else if !plain {
                         println!(
                             "{} {} after={}ms",
                             style("[TIMEOUT]").yellow().bold(),
@@ -353,7 +353,7 @@ fn main() -> io::Result<()> {
                     } else {
                         println!("{} timeout after={}ms", domain, await_reply_ms);
                     }
-                } else if pretty_stdout {
+                } else if !plain {
                     println!("{} {}", style("[SEND]").green().bold(), domain);
                 } else {
                     println!("{} sent", domain);
@@ -412,7 +412,7 @@ fn main() -> io::Result<()> {
                 s.set_read_timeout(Some(std::time::Duration::from_millis(await_reply_ms)))?;
             }
             eprintln!("dnsm: sending via resolver {}", target);
-            if pretty_stdout {
+            if !plain {
                 eprintln!(
                     "{} {}",
                     style("[INFO]").cyan().bold(),
@@ -427,7 +427,7 @@ fn main() -> io::Result<()> {
         }
     }
 
-    if pretty_stdout {
+    if !plain {
         eprintln!(
             "{} {}={} {}={} {}={} {}={}",
             style("[INFO]").cyan().bold(),
@@ -494,7 +494,7 @@ fn main() -> io::Result<()> {
             if await_reply_ms > 0 {
                 let ip_str = resp_ip.map(|ip| format!(" ip={}", ip)).unwrap_or_default();
                 if ack_ok {
-                    if pretty_stdout {
+                    if !plain {
                         println!(
                             "{} {}{}",
                             style("[OK]").green().bold(),
@@ -504,7 +504,7 @@ fn main() -> io::Result<()> {
                     } else {
                         println!("{} ok{}", qname, ip_str);
                     }
-                } else if pretty_stdout {
+                } else if !plain {
                     println!(
                         "{} {} after={}ms",
                         style("[TIMEOUT]").yellow().bold(),
@@ -514,7 +514,7 @@ fn main() -> io::Result<()> {
                 } else {
                     println!("{} timeout after={}ms", qname, await_reply_ms);
                 }
-            } else if pretty_stdout {
+            } else if !plain {
                 println!("{} {}", style("[SEND]").green().bold(), qname);
             } else {
                 println!("{} sent", qname);

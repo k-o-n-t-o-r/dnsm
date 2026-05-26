@@ -36,10 +36,10 @@ That's it. The client LZMA-compresses your input, encodes it into DNS labels, an
 echo "secret message" | dnsm -n
 
 # 2. Send data and get a mailbox ID back
-echo "hello world" | dnsm -p
+echo "hello world" | dnsm
 
 # 3. Send binary data
-cat secrets.zip | dnsm -p
+cat secrets.zip | dnsm
 
 # 4. Use an explicit mailbox ID
 echo "hello" | dnsm a1b2c3d4e5f6 -n

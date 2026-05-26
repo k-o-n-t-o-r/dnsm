@@ -178,9 +178,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "-p",
-        "--pretty",
+        "--plain",
         action="store_true",
-        help="Print colored send progress to stderr",
+        help="Suppress colored progress output (plain text only)",
     )
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
     parser.add_argument(
@@ -194,7 +194,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.random_mailbox and args.mailbox:
         parser.error("--random-mailbox conflicts with positional MAILBOX")
 
-    use_color = args.pretty and not args.no_color
+    use_color = not args.plain and not args.no_color
 
     def _styled(tag: str, color: str, bold: bool = True) -> str:
         codes = {"green": "32", "cyan": "36", "yellow": "33", "white": "37", "dim": "2"}
@@ -271,7 +271,7 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"dnsm: connect {target_str}: {e}", file=sys.stderr)
                 sys.exit(1)
             print(f"dnsm: sending via resolver {target_str}", file=sys.stderr)
-            if args.pretty:
+            if not args.plain:
                 print(
                     f"{_styled('[INFO]', 'cyan')} {_styled('resolver', 'cyan')} {_styled(target_str, 'cyan')}",
                     file=sys.stderr,
@@ -282,7 +282,7 @@ def main(argv: list[str] | None = None) -> None:
                 file=sys.stderr,
             )
 
-    if args.pretty:
+    if not args.plain:
         print(
             f"{_styled('[INFO]', 'cyan')} {_styled('zone', 'dim', False)}={_styled(args.zone, 'cyan')} "
             f"{_styled('first_payload', 'dim', False)}={_styled(str(info.first_payload_len), 'cyan')} "
@@ -333,14 +333,14 @@ def main(argv: list[str] | None = None) -> None:
             if args.await_reply_ms > 0:
                 ip_str = f" ip={resp_ip}" if resp_ip else ""
                 if ack_ok:
-                    if args.pretty:
+                    if not args.plain:
                         print(
                             f"{_styled('[OK]', 'green')} {qname}{_styled(ip_str, 'dim', False)}",
                         )
                     else:
                         print(f"{qname} ok{ip_str}")
                 else:
-                    if args.pretty:
+                    if not args.plain:
                         print(
                             f"{_styled('[TIMEOUT]', 'yellow')} {qname} after={args.await_reply_ms}ms",
                         )
@@ -348,7 +348,7 @@ def main(argv: list[str] | None = None) -> None:
                         print(
                             f"{qname} timeout after={args.await_reply_ms}ms",
                         )
-            elif args.pretty:
+            elif not args.plain:
                 print(
                     f"{_styled('[SEND]', 'green')} {qname}",
                 )
@@ -423,7 +423,7 @@ def _send_ping(domain: str, host: str, port: int, args, _styled) -> None:
                 parsed = _parse_dns_response(buf)
                 if parsed and parsed[0] == qid and parsed[1] == 0:
                     ip_str = f" ip={parsed[2]}" if parsed[2] else ""
-                    if args.pretty:
+                    if not args.plain:
                         print(
                             f"{_styled('[OK]', 'green')} {domain}{_styled(ip_str, 'dim', False)}",
                         )
@@ -433,13 +433,13 @@ def _send_ping(domain: str, host: str, port: int, args, _styled) -> None:
                     return
         except (socket.timeout, OSError):
             pass
-        if args.pretty:
+        if not args.plain:
             print(
                 f"{_styled('[TIMEOUT]', 'yellow')} {domain} after={args.await_reply_ms}ms",
             )
         else:
             print(f"{domain} timeout after={args.await_reply_ms}ms")
-    elif args.pretty:
+    elif not args.plain:
         print(f"{_styled('[SEND]', 'green')} {domain}")
     else:
         print(f"{domain} sent")
