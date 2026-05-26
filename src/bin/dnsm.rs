@@ -8,18 +8,18 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "dnsm-client",
+    name = "dnsm",
     about = "Send data via DNS queries",
     long_about = "Reads from stdin and emits DNS queries carrying the data, or prints\n\
                   hostnames (one per chunk) when --dont-query is used.\n\
                   \n\
                   Examples:\n\
                   \n\
-                  - echo 'hello' | dnsm-client\n\
-                  - echo 'hello' | dnsm-client abcdef123456\n\
-                  - echo 'hello' | dnsm-client abcdef123456 --zone x.foo.bar -n\n\
-                  - dnsm-client --ping\n\
-    - head -c 200000 /dev/urandom | dnsm-client --resolver-ip 127.0.0.1:5353",
+                  - echo 'hello' | dnsm\n\
+                  - echo 'hello' | dnsm abcdef123456\n\
+                  - echo 'hello' | dnsm abcdef123456 --zone x.foo.bar -n\n\
+                  - dnsm --ping\n\
+    - head -c 200000 /dev/urandom | dnsm --resolver-ip 127.0.0.1:5353",
     disable_help_subcommand = true
 )]
 struct ClientArgs {
@@ -279,7 +279,7 @@ fn main() -> io::Result<()> {
         Ok(v) => v,
         Err(_) => {
             eprintln!(
-                "dnsm-client: invalid mailbox '{}': must be 12 hex chars",
+                "dnsm: invalid mailbox '{}': must be 12 hex chars",
                 mailbox_hex
             );
             std::process::exit(2);
@@ -291,11 +291,11 @@ fn main() -> io::Result<()> {
         let domain = match build_human_ping_domain(&mailbox_hex, &zone) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("dnsm-client: {}", e);
+                eprintln!("dnsm: {}", e);
                 std::process::exit(2);
             }
         };
-        eprintln!("dnsm-client: zone={} ping mailbox={}", zone, mailbox_hex);
+        eprintln!("dnsm: zone={} ping mailbox={}", zone, mailbox_hex);
         if dont_query {
             println!("{}", domain);
         } else {
@@ -386,7 +386,7 @@ fn main() -> io::Result<()> {
         match build_domains_for_data(&stdin_data, &zone, &opts) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("dnsm-client: {}", e);
+                eprintln!("dnsm: {}", e);
                 std::process::exit(2);
             }
         };
@@ -411,7 +411,7 @@ fn main() -> io::Result<()> {
             if await_reply_ms > 0 {
                 s.set_read_timeout(Some(std::time::Duration::from_millis(await_reply_ms)))?;
             }
-            eprintln!("dnsm-client: sending via resolver {}", target);
+            eprintln!("dnsm: sending via resolver {}", target);
             if pretty_stdout {
                 eprintln!(
                     "{} {}",
@@ -422,7 +422,7 @@ fn main() -> io::Result<()> {
             sock = Some(s);
         } else {
             eprintln!(
-                "dnsm-client: no --resolver-ip and could not parse /etc/resolv.conf; printing hostnames"
+                "dnsm: no --resolver-ip and could not parse /etc/resolv.conf; printing hostnames"
             );
         }
     }
@@ -451,7 +451,7 @@ fn main() -> io::Result<()> {
         eprintln!();
     } else {
         eprintln!(
-            "dnsm-client: zone={} first_payload={} payload_per_chunk={} total_chunks={} mailbox={}",
+            "dnsm: zone={} first_payload={} payload_per_chunk={} total_chunks={} mailbox={}",
             zone, info.first_payload_len, info.payload_per_chunk, info.total_chunks, mailbox_hex
         );
     }
@@ -573,5 +573,5 @@ fn main() -> io::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "dnsm_client/tests.rs"]
+#[path = "dnsm/tests.rs"]
 mod tests;

@@ -58,7 +58,7 @@ jobs:
       fail-fast: true
       matrix:
         target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
-        bin: [dnsm-client, dnsm-server, dnsm-ws]
+        bin: [dnsm, dnsm-server, dnsm-ws]
     steps:
       - uses: actions/checkout@v4
 
@@ -79,7 +79,7 @@ jobs:
         run: |
           set -euxo pipefail
           case "${{ matrix.bin }}" in
-            dnsm-client) FEATURES="" ;;
+            dnsm) FEATURES="" ;;
             dnsm-server) FEATURES="sqlite" ;;
             dnsm-ws)     FEATURES="sqlite,ws-server" ;;
           esac
@@ -187,12 +187,12 @@ jobs:
             file: docker/Dockerfile.dnsm-ws
             arch: arm64
             platform: linux/arm64
-          - image: dnsm-client
-            file: docker/Dockerfile.dnsm-client
+          - image: dnsm
+            file: docker/Dockerfile.dnsm
             arch: amd64
             platform: linux/amd64
-          - image: dnsm-client
-            file: docker/Dockerfile.dnsm-client
+          - image: dnsm
+            file: docker/Dockerfile.dnsm
             arch: arm64
             platform: linux/arm64
     steps:
@@ -446,12 +446,12 @@ jobs:
             file: docker/Dockerfile.dnsm-ws
             arch: arm64
             platform: linux/arm64
-          - image: dnsm-client
-            file: docker/Dockerfile.dnsm-client
+          - image: dnsm
+            file: docker/Dockerfile.dnsm
             arch: amd64
             platform: linux/amd64
-          - image: dnsm-client
-            file: docker/Dockerfile.dnsm-client
+          - image: dnsm
+            file: docker/Dockerfile.dnsm
             arch: arm64
             platform: linux/arm64
     steps:
@@ -540,7 +540,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euxo pipefail
-          for img in dnsm-server dnsm-ws dnsm-client; do
+          for img in dnsm-server dnsm-ws dnsm; do
             for t in "v${VERSION}" "${VERSION}" latest; do
               docker buildx imagetools create \
                 --tag "ghcr.io/${OWNER}/${img}:${t}" \

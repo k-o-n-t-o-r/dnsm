@@ -3,7 +3,7 @@ use clap::error::ErrorKind;
 
 #[test]
 fn help_flag_triggers_help() {
-    let res = ClientArgs::try_parse_from(["dnsm-client", "--help"]);
+    let res = ClientArgs::try_parse_from(["dnsm", "--help"]);
     assert!(res.is_err());
     let e = res.unwrap_err();
     assert_eq!(e.kind(), ErrorKind::DisplayHelp);
@@ -11,7 +11,7 @@ fn help_flag_triggers_help() {
 
 #[test]
 fn zone_defaults_to_k_dnsm_re() {
-    let args = ClientArgs::try_parse_from(["dnsm-client"]).expect("should parse");
+    let args = ClientArgs::try_parse_from(["dnsm"]).expect("should parse");
     assert_eq!(args.zone, "k.dnsm.re");
     assert!(args.mailbox.is_none());
 }
@@ -19,7 +19,7 @@ fn zone_defaults_to_k_dnsm_re() {
 #[test]
 fn custom_zone() {
     let args = ClientArgs::try_parse_from([
-        "dnsm-client",
+        "dnsm",
         "--zone",
         "x.foo.bar",
         "--delay-ms",
@@ -38,34 +38,34 @@ fn custom_zone() {
 
 #[test]
 fn positional_mailbox_parsed() {
-    let args = ClientArgs::try_parse_from(["dnsm-client", "abcdef123456"]).expect("should parse");
+    let args = ClientArgs::try_parse_from(["dnsm", "abcdef123456"]).expect("should parse");
     assert_eq!(args.mailbox.as_deref(), Some("abcdef123456"));
     assert_eq!(args.zone, "k.dnsm.re");
 }
 
 #[test]
 fn invalid_positional_mailbox_rejected() {
-    let res = ClientArgs::try_parse_from(["dnsm-client", "not-a-hex"]);
+    let res = ClientArgs::try_parse_from(["dnsm", "not-a-hex"]);
     assert!(res.is_err());
 }
 
 #[test]
 fn await_reply_ms_defaults_to_3000() {
-    let args = ClientArgs::try_parse_from(["dnsm-client"]).expect("should parse");
+    let args = ClientArgs::try_parse_from(["dnsm"]).expect("should parse");
     assert_eq!(args.await_reply_ms, 3000);
 }
 
 #[test]
 fn random_mailbox_flag_sets_field() {
     let args =
-        ClientArgs::try_parse_from(["dnsm-client", "--random-mailbox"]).expect("should parse");
+        ClientArgs::try_parse_from(["dnsm", "--random-mailbox"]).expect("should parse");
     assert!(args.random_mailbox);
     assert!(args.mailbox.is_none());
 }
 
 #[test]
 fn random_mailbox_conflicts_with_positional() {
-    let res = ClientArgs::try_parse_from(["dnsm-client", "abcdef123456", "--random-mailbox"]);
+    let res = ClientArgs::try_parse_from(["dnsm", "abcdef123456", "--random-mailbox"]);
     assert!(res.is_err());
     let e = res.unwrap_err();
     assert_eq!(e.kind(), ErrorKind::ArgumentConflict);

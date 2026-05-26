@@ -9,6 +9,12 @@ description = "Toolkit for covert data exfiltration using DNS"
 readme = "README.md"
 homepage = "https://dnsm.re"
 keywords = ["gdpr", "itsec", "security", "exfiltration", "telemetry"]
+categories = [
+    "security",
+    "command-line-utilities",
+    "network-programming",
+    "development-tools",
+]
 
 [dependencies]
 lzma-rust2 = "0.16.3"
@@ -41,10 +47,10 @@ pyo3 = { version = "0.28", features = ["extension-module"], optional = true }
 
 [lib]
 name = "dnsm"
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [features]
-default = ["native-cli", "sqlite"]
+default = ["native-cli"]
 
 native-cli = ["dep:clap", "dep:console", "dep:fastrand"]
 
@@ -67,8 +73,8 @@ fastrand = "2.4.1"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 
 [[bin]]
-name = "dnsm-client"
-path = "src/bin/dnsm_client.rs"
+name = "dnsm"
+path = "src/bin/dnsm.rs"
 required-features = ["native-cli"]
 
 [[bin]]

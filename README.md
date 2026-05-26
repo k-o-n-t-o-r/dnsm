@@ -21,7 +21,7 @@ Encode data into DNS queries. Retrieve it on a server you control. Works from fi
 
 ```bash
 # Send "hello world" to the public dnsm instance (k.dnsm.re)
-echo "hello world" | dnsm-client
+echo "hello world" | dnsm
 
 # Retrieve the message via DNS TXT record
 dig @dnsm.re <mailbox>.m.dnsm.re TXT +tcp +short
@@ -33,16 +33,16 @@ That's it. The client LZMA-compresses your input, encodes it into DNS labels, an
 
 ```bash
 # 1. Generate domain names without sending (inspect what gets encoded)
-echo "secret message" | dnsm-client -n
+echo "secret message" | dnsm -n
 
 # 2. Send data and get a mailbox ID back
-echo "hello world" | dnsm-client -p
+echo "hello world" | dnsm -p
 
 # 3. Send binary data
-cat secrets.zip | dnsm-client -p
+cat secrets.zip | dnsm -p
 
 # 4. Use an explicit mailbox ID
-echo "hello" | dnsm-client a1b2c3d4e5f6 -n
+echo "hello" | dnsm a1b2c3d4e5f6 -n
 ```
 
 > [!NOTE]
@@ -53,7 +53,7 @@ echo "hello" | dnsm-client a1b2c3d4e5f6 -n
 Download the latest [release](https://github.com/k-o-n-t-o-r/dnsm/releases), or build from source:
 
 ```bash
-cargo build --release --bin dnsm-client
+cargo build --release --bin dnsm
 cargo build --release --bin dnsm-server --features sqlite
 ```
 
@@ -186,7 +186,7 @@ Options:
 </details>
 
 <details>
-  <summary><code>dnsm-client --help</code></summary>
+  <summary><code>dnsm --help</code></summary>
 
 ```text
 Reads from stdin and emits DNS queries carrying the data, or prints
@@ -194,13 +194,13 @@ hostnames (one per chunk) when --dont-query is used.
 
 Examples:
 
-- echo 'hello' | dnsm-client
-- echo 'hello' | dnsm-client abcdef123456
-- echo 'hello' | dnsm-client abcdef123456 --zone x.foo.bar -n
-- dnsm-client --ping
-- head -c 200000 /dev/urandom | dnsm-client --resolver-ip 127.0.0.1:5353
+- echo 'hello' | dnsm
+- echo 'hello' | dnsm abcdef123456
+- echo 'hello' | dnsm abcdef123456 --zone x.foo.bar -n
+- dnsm --ping
+- head -c 200000 /dev/urandom | dnsm --resolver-ip 127.0.0.1:5353
 
-Usage: dnsm-client [OPTIONS] [MAILBOX]
+Usage: dnsm [OPTIONS] [MAILBOX]
 
 Arguments:
   [MAILBOX]
@@ -340,14 +340,14 @@ canon  = dnsm.validate_mailbox("050373323440")  # str or None
 
 ### CLI
 
-A `dnsm-client` entry point mirrors the Rust CLI:
+A `dnsm` entry point mirrors the Rust CLI:
 
 ```bash
-echo "hello world" | dnsm-client -n
-echo "hello world" | dnsm-client --resolver-ip 127.0.0.1:5353 --delay-ms 2 --debug
+echo "hello world" | dnsm -n
+echo "hello world" | dnsm --resolver-ip 127.0.0.1:5353 --delay-ms 2 --debug
 ```
 
-Run `dnsm-client --help` for the full option list.
+Run `dnsm --help` for the full option list.
 
 ----
 
@@ -358,7 +358,7 @@ Run `dnsm-client --help` for the full option list.
 dnsm-server x.foo.bar --bind 0.0.0.0:5353 --respond_with 127.0.0.1
 
 # In another terminal, send data to it
-echo "hello world" | dnsm-client --zone x.foo.bar --resolver-ip 127.0.0.1:5353
+echo "hello world" | dnsm --zone x.foo.bar --resolver-ip 127.0.0.1:5353
 
 # Check the database
 sqlite3 dnsm.db "SELECT id, data FROM messages"
@@ -423,7 +423,7 @@ If you prefer building `dnsm` locally:
 
 - Native binaries (release builds):
 
-  - Client: `cargo build --release --bin dnsm-client`
+  - Client: `cargo build --release --bin dnsm`
   - Server: `cargo build --release --bin dnsm-server --features sqlite`
   - WS/API: `cargo build --release --bin dnsm-ws --features "sqlite,ws-server"`
 
