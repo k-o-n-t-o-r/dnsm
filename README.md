@@ -11,11 +11,60 @@
 <p>
   <a href="https://crates.io/crates/dnsm"><img alt="crates.io" src="https://img.shields.io/crates/v/dnsm.svg"></a>
   <a href="https://pypi.org/project/dnsm"><img alt="PyPI" src="https://img.shields.io/pypi/v/dnsm.svg"></a>
+  <a href="https://www.npmjs.com/package/@k-o-n-t-o-r/dnsm"><img alt="npm" src="https://img.shields.io/npm/v/@k-o-n-t-o-r/dnsm.svg"></a>
   <img alt="Rust" src="https://img.shields.io/badge/Rust-stable-orange?logo=rust">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.9+-blue?logo=python&logoColor=white">
 </p>
 
-`dnsm` lets you transmit arbitrary data over plain DNS by encoding bytes into domain names and reconstructing the original payload on an authoritative server you control. It works from constrained egress environments to browsers.
+## Quick Start
+
+Encode data into DNS queries. Retrieve it on a server you control. Works from firewalled networks, CI runners, browsers -- anywhere DNS resolves.
+
+```bash
+# Send "hello world" via DNS to our public instance
+echo "hello world" | dnsm
+```
+
+The client prints a mailbox ID (e.g. `f8925edd7f13`). Open your inbox in the browser to see the message arrive:
+
+> **https://dnsm.re/#/inbox/f8925edd7f13** (replace with your mailbox ID)
+
+Or retrieve it via DNS:
+
+```bash
+dig @dnsm.re f8925edd7f13.m.dnsm.re TXT +tcp +short
+```
+
+That's it. No TCP connection, no HTTP -- just DNS. The client LZMA-compresses your input, encodes it into DNS labels, and lets recursive resolvers carry the data to the server.
+
+### More examples
+
+```bash
+# Generate domain names without sending (inspect what gets encoded)
+echo "secret message" | dnsm -n
+
+# Send binary data
+cat secrets.zip | dnsm
+
+# Use an explicit mailbox ID
+echo "hello" | dnsm a1b2c3d4e5f6
+
+# Plain output (no colors)
+echo "hello" | dnsm -p
+```
+
+> [!NOTE]
+> The zone defaults to `k.dnsm.re` (our public instance). Pass `--zone` to target your own server.
+
+### Install
+
+```bash
+cargo install dnsm                        # Rust (client binary)
+pip install dnsm                          # Python
+npm install -g @k-o-n-t-o-r/dnsm         # Node.js (Linux/macOS, x64/arm64)
+```
+
+Or download pre-built binaries from the latest [release](https://github.com/k-o-n-t-o-r/dnsm/releases).
 
 <div align="center">
  <img src="https://raw.githubusercontent.com/k-o-n-t-o-r/dnsm/master/static/screenshots/combined_inbox_browser.png" />
@@ -28,105 +77,21 @@
 
 </div>
 
-## Introduction
+----
 
-Many real‑world environments make "move data from A to B" more complicated than opening a socket. Egress is shaped by segmentation, firewalls, proxies, and sandboxed runtimes. Consider a few common situations: JavaScript running in a browser that only exposes HTTP(S) primitives; a CI runner or serverless function allowed to talk only to specific endpoints; a Kubernetes workload constrained by NetworkPolicies; or a corporate workstation that reaches the internet only through a proxy. The transport you'd normally pick might be unavailable - yet some parts of the stack continue to work automatically.
+## How It Works
 
-Most controls are expressed around specific transports and APIs (TCP, TLS, HTTP) and only come into play once an application attempts a connection. What they often leave implicit is what happens first: name resolution.
+Many environments block outbound TCP/HTTP but leave DNS resolution untouched -- firewalls, proxies, sandboxed runtimes, CI runners, browsers. DNS queries happen early in connection setup, before transport-level controls kick in, and a query can traverse the network even when no subsequent connection is possible.
 
-DNS lookups occur early in connection setup and are frequently permitted because everything else depends on them. Importantly, a DNS query can traverse the network even when no subsequent connection is possible.
+`dnsm` exploits this: it encodes bytes into the labels of a domain name (think `encoded_payload.k.dnsm.re`) and lets recursive resolvers carry that name to a zone you control. The server reassembles chunks and decodes the original payload.
 
-While callers rarely influence the resolver's transport details (UDP vs TCP, retries, caching), they do control the most crucial input: the domain name being resolved. A domain name is composed of textual labels. If we can encode information into those labels safely and deterministically, we can induce resolvers to carry our data to an authoritative server we control - without ever establishing an application‑level connection.
+The protocol: inputs are LZMA-compressed, framed with headers, split into ordered chunks, and base32-encoded into valid hostname labels. Optional mailboxes provide inbox-style retrieval and multiplexing across messages and senders.
 
-This is the idea `dnsm` builds on.
+### Browsers
 
-We encode bytes into the textual labels that make up a domain name (naively, think `your_payload_here.k.dnsm.re` - an illustration of the idea, not the actual wire format) and rely on recursive resolvers to carry that name to a zone we control. `dnsm` implements a compact, purpose‑built protocol: inputs are LZMA‑compressed, framed with headers, split into ordered chunks, and encoded so that each chunk becomes a valid hostname label sequence (e.g., base32, length‑safe labels; see [Protocol Header](#protocol-header)). Optional mailboxes provide inbox‑style retrieval and safe multiplexing across messages and senders.
+The client also runs in browsers via WebAssembly. Depending on how you trigger resolution, lookups don't show up in browser DevTools and are invisible to users. Most traffic inspection tools (`mitmproxy`, `Fiddler`, `Burp`) don't capture DNS by default. Try [our browser test](https://dnsm.re/#/browser-test) to validate this.
 
-To receive data, pick a short zone you control (e.g., `k.dnsm.re`) and run `dnsm-server` as the authoritative nameserver for that zone. It observes incoming queries, reassembles chunks, and decodes the payload into logs or a SQLite database.
-
-On the sending side, use `dnsm-client` to generate the hostnames for arbitrary data, then trigger DNS resolution using any mechanism your environment allows (OS resolver, browser primitives, proxies, etc.). The lookups traverse recursive resolvers and eventually reach your authoritative server - delivering the message without opening an application‑layer connection.
-
-#### Browsers
-
-The client also runs in browsers and other JS contexts. Depending on how you trigger resolution, those lookups don't show up in browser DevTools and are completely invisible to users. Also, most tools commonly used to inspect app traffic (`mitmproxy`, `Fiddler`, `Burp`, ...) don't capture DNS by default.
-If you want to validate these claims, check out [our browser test](https://dnsm.re/#/browser-test).
-
-Read the [Privacy-Preserving Data Transmission](#privacy-preserving-data-transmission) section if you're looking for a more white-hat-friendly use case.
-
-## Quick Start
-
-Download the latest release, put the binaries on your PATH, or run them in place.
-
-> [!NOTE]
-> Feel free to use our public zone `k.dnsm.re` for testing, in case you don't want to host your own server.
-
-### Sending Data to the Public Instance
-
-#### Generating domain names from some input data:
-
-```bash
-$ echo "hello world" | dnsm-client k.dnsm.re --random-mailbox -n
-
-dnsm-client: zone=k.dnsm.re
-             first_payload=141
-             payload_per_chunk=141
-             total_chunks=1
-             mailbox=f8925edd7f13
-
-aaabz6esl3ox6e25aaaiaaamaaaaaaaaaaaaanazjhxi32ixre5dgx74vt3saaa.k.dnsm.re
-```
-
-> [!NOTE]
-> For such small input data, only one chunk/domain name is needed.
-
-#### Triggering DNS resolution:
-
-```bash
-$ ping -c 1 aaabz6esl3ox6e25aaaiaaamaaaaaaaaaaaaanazjhxi32ixre5dgx74vt3saaa.k.dnsm.re
-
-# Or with netcat
-$ nc aaabz6esl3ox6e25aaaiaaamaaaaaaaaaaaaanazjhxi32ixre5dgx74vt3saaa.k.dnsm.re 9999 # Port doesn't matter
-```
-
-> [!NOTE]
-> There are many programs available on a typical Linux installation that can be used for this. Common options include `dig`, `curl`, `wget`, `resolvectl`, `netcat`, `ssh` and many more.
-
-#### Retrieving messages:
-
-```bash
-$ dig @dnsm.re f8925edd7f13.m.dnsm.re TXT +tcp +short
-
-"dc5a4edb8240\009hello world\010"
-```
-
-Also check out the [web mailbox](https://dnsm.re/#/inbox) and `dnsm-ws`.
-
-### Running the Server Locally
-
-1. Start the authoritative DNS server and point it at your data zone. This example answers on UDP `:5353`, logs queries, and stores reconstructed payloads in SQLite:
-
-```bash
-dnsm-server x.foo.bar --bind 0.0.0.0:5353 --respond_with 127.0.0.1 --log queries.log --db ./dnsm.sqlite
-```
-
-2. In a different terminal, stream some test data through the client so it emits DNS lookups toward the server:
-
-```bash
-echo "hello world" | dnsm-client x.foo.bar --resolver-ip 127.0.0.1:5353
-
-# You can also send binary data
-cat secrets.zip | dnsm-client x.foo.bar --resolver-ip 127.0.0.1:5353
-```
-
-3. Watch the server log (or inspect the SQLite database) to confirm the message was received and reassembled:
-
-```bash
-  tail -f queries.log
-```
-
-```bash
-  sqlite3 dnsm.sqlite "SELECT id, data FROM messages"
-```
+See [Privacy-Preserving Data Transmission](#privacy-preserving-data-transmission) for a white-hat use case.
 
 ## CLI Help
 
@@ -217,9 +182,9 @@ Options:
 
       --rate-limit-qps <QPS>
           Maximum queries per second per IP address. Set to 0 to disable rate limiting. Aims to
-          prevent UDP amplification/reflection attacks. Default: 100 qps
+          prevent UDP amplification/reflection attacks. Default: 1000 qps
 
-          [default: 100]
+          [default: 1000]
 
   -h, --help
           Print help (see a summary with '-h')
@@ -228,7 +193,7 @@ Options:
 </details>
 
 <details>
-  <summary><code>dnsm-client --help</code></summary>
+  <summary><code>dnsm --help</code></summary>
 
 ```text
 Reads from stdin and emits DNS queries carrying the data, or prints
@@ -236,17 +201,24 @@ hostnames (one per chunk) when --dont-query is used.
 
 Examples:
 
-- echo 'hello' | dnsm-client x.foo.bar --dont-query
-- echo 'hello' | dnsm-client x.foo.bar --await-reply-ms 50 --delay-ms 2 --debug
-- head -c 200000 /dev/urandom | dnsm-client x.foo.bar --resolver-ip 127.0.0.1:5353
+- echo 'hello' | dnsm
+- echo 'hello' | dnsm abcdef123456
+- echo 'hello' | dnsm abcdef123456 --zone x.foo.bar -n
+- dnsm --ping
+- head -c 200000 /dev/urandom | dnsm --resolver-ip 127.0.0.1:5353
 
-Usage: dnsm-client [OPTIONS] <ZONE>
+Usage: dnsm [OPTIONS] [MAILBOX]
 
 Arguments:
-  <ZONE>
-          Zone/apex the payload labels are appended to
+  [MAILBOX]
+          Mailbox ID (exactly 12 hex chars). Random if omitted
 
 Options:
+      --zone <ZONE>
+          Zone/apex the payload labels are appended to
+
+          [default: k.dnsm.re]
+
       --resolver-ip <HOST[:PORT]>
           Send to this resolver (default: first nameserver in /etc/resolv.conf)
 
@@ -256,7 +228,7 @@ Options:
       --await-reply-ms <MS>
           Wait up to this many ms for a reply to each query (0 disables)
 
-          [default: 0]
+          [default: 3000]
 
       --delay-ms <MS>
           Sleep this many ms between queries
@@ -266,23 +238,21 @@ Options:
       --sent-log <PATH>
           Append a human-readable send log to this file
 
-      --mailbox <HEX12>
-          Optional mailbox ID (exactly 12 hex chars, no 0x)
-
       --random-mailbox
-          Generate a random mailbox ID (conflicts with --mailbox)
+          Generate a random mailbox ID (conflicts with positional MAILBOX)
+
+      --ping
+          Send a minimal ping (no message content). Produces `<mailbox>.<zone>` (e.g.
+          bf1c3a4a3694.k.dnsm.re)
 
       --debug
           Verbose progress to stderr
 
-  -p, --pretty
-          Print send progress to stdout with colors (does not affect --dont-query output)
-
-      --ping
-          Send a minimal ping (no message content, mailbox required)
+  -p, --plain
+          Suppress colored progress output (plain text only)
 
       --no-color
-          Disable ANSI colors even when --pretty is used
+          Disable ANSI colors
 
       --tagged-log
           Also write bracketed tags to --sent-log
@@ -326,7 +296,7 @@ const pingHost = ping_domain(mailbox, zone);
 for (const h of domainsWithMbx) new Image().src = "https://" + h;
 ```
 
-See [BrowserTest.svelte](web/src/routes/BrowserTest.svelte) for many in-browser resolution methods and usage examples.
+See [BrowserTest.tsx](web/src/pages/BrowserTest.tsx) for many in-browser resolution methods and usage examples.
 
 Notes:
 
@@ -345,7 +315,7 @@ Native Python bindings powered by PyO3. The same behavior as the Rust CLI, with 
 pip install dnsm
 ```
 
-Wheels are published for Linux x86_64 and aarch64 (CPython 3.9 to 3.13).
+Wheels are published for Linux and macOS (x86_64 and arm64, CPython 3.9 to 3.14).
 
 ### Library usage
 
@@ -377,17 +347,29 @@ canon  = dnsm.validate_mailbox("050373323440")  # str or None
 
 ### CLI
 
-A `dnsm-client` entry point mirrors the Rust CLI:
+A `dnsm` entry point mirrors the Rust CLI:
 
 ```bash
-echo "hello world" | dnsm-client k.dnsm.re --random-mailbox -n
-echo "hello world" | dnsm-client k.dnsm.re --resolver-ip 127.0.0.1:5353 --delay-ms 2 --debug
+echo "hello world" | dnsm -n
+echo "hello world" | dnsm --resolver-ip 127.0.0.1:5353 --delay-ms 2 --debug
 ```
 
-Run `dnsm-client --help` for the full option list.
+Run `dnsm --help` for the full option list.
 
 ----
 
+## Running Your Own Server
+
+```bash
+# Start the server (binds UDP :5353, stores payloads in SQLite)
+dnsm-server x.foo.bar --bind 0.0.0.0:5353 --respond_with 127.0.0.1
+
+# In another terminal, send data to it
+echo "hello world" | dnsm --zone x.foo.bar --resolver-ip 127.0.0.1:5353
+
+# Check the database
+sqlite3 dnsm.db "SELECT id, data FROM messages"
+```
 
 ## Domain Setup
 
@@ -424,11 +406,11 @@ assert!(info.total_chunks >= 1);
 
 | Section                 | Wire Format                                                                                                                                 | Notes                                                                                                                                                                                  |
 | :---------------------- | :------------------------------------------------------------------------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Envelope**            | LZMA input → chunk framing (`header + extras + payload`) → base32 labels (lowercase, no padding).                                           | Each label ≤ 63 bytes. Suffix the labels with the validated zone so the full QNAME stays under 255 bytes on the wire.                                                                  |
-| **Chunk Header (v2)**   | 8-bit flags `[ping:1][chunked:1][mailbox:1][first:1][version:3][reserved:1]`, plus optional 16-bit big-endian `remaining` when `chunked=1`. | `version = 0x2`; single-chunk messages use a 1-byte header; multi-chunk messages use 3 bytes. `ping` marks a content-less keepalive; `first` marks the opener of a multi-chunk stream. |
-| **Chunk Extras**        | Single: optional 6-byte mailbox. <br> First multi: 6-byte `message_key48`, optional 6-byte mailbox. <br> Follow-up: 6-byte `message_key48`. | `message_key48 = BLAKE3(original_payload)[..6]`; mailbox values are big-endian 48-bit when present; follow-up chunks omit mailbox bytes even though the header flag stays set.         |
+| **Envelope**            | LZMA input -> chunk framing (`header + extras + payload`) -> base32 labels (lowercase, no padding).                                           | Each label <= 63 bytes. Suffix the labels with the validated zone so the full QNAME stays under 255 bytes on the wire.                                                                  |
+| **Chunk Header (v3)**   | 8-bit flags `[ping:1][chunked:1][mailbox:1][first:1][version:3][reserved:1]`, plus optional 16-bit big-endian `remaining` when `chunked=1`. | `version = 0x3`; single-chunk messages use a 1-byte header; multi-chunk messages use 3 bytes. `ping` marks a content-less keepalive; `first` marks the opener of a multi-chunk stream. |
+| **Chunk Extras**        | Single: optional 6-byte mailbox. <br> First multi: 6-byte `message_key48`, optional 6-byte mailbox. <br> Follow-up: 6-byte `message_key48`. | v3 `message_key48 = BLAKE3("dnsm-msg-id\x00" \|\| has_mb(1) \|\| [mb(6)] \|\| payload)[..6]`; mailbox values are big-endian 48-bit when present. The key is now mailbox-aware so that the same payload with different mailboxes produces different assembly keys. |
 | **Ping**                | 1-byte header (`ping=1, mailbox=1`) + 6-byte mailbox, no payload.                                                                          | Stored with `message_type='ping'` in the database. Pings are excluded from TXT mailbox responses but visible in the WebSocket/HTTP API.                                               |
-| **Identifiers**         | `message_key48` binds chunks and server deduplication. <br> `message_id = BLAKE3(decompressed_payload)[..16]`.                              | Mailbox values are masked to `0x0000_FFFF_FFFF_FFFF`; TXT paging accepts either the 12-hex prefix or the full 32-hex `message_id`.                                                     |
+| **Identifiers**         | `message_key48` binds multi-chunk assembly. <br> `message_id = BLAKE3(decompressed_payload)[..16]` for DB dedup.                            | Mailbox values are masked to `0x0000_FFFF_FFFF_FFFF`; TXT paging accepts either the 12-hex prefix or the full 32-hex `message_id`. The legacy `compute_message_key48()` helper computes the v2 (payload-only) key; multi-chunk assembly uses the v3 mailbox-aware key. |
 | **Mailbox TXT Replies** | TXT RRs surface as `<message_id_prefix>\t<raw payload bytes>`.                                                                              | Prefix is the first 12 hex chars of `message_id`; oversized replies truncate gracefully and may set the TC bit as a paging hint. Only `message` rows are included (pings are excluded). |
 
 ## Finding DNS Call Sites
@@ -448,7 +430,7 @@ If you prefer building `dnsm` locally:
 
 - Native binaries (release builds):
 
-  - Client: `cargo build --release --bin dnsm-client`
+  - Client: `cargo build --release --bin dnsm`
   - Server: `cargo build --release --bin dnsm-server --features sqlite`
   - WS/API: `cargo build --release --bin dnsm-ws --features "sqlite,ws-server"`
 

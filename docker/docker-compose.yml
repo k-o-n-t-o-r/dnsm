@@ -9,7 +9,7 @@ services:
     # Bind to unprivileged port by default; add NET_BIND_SERVICE to use :53
     command: [
       "--bind", "0.0.0.0:5353",
-      "--respond_with", "0.0.0.0",
+      "--respond_with", "188.68.32.21",
       "--log", "/var/log/dnsm/queries.log",
       "--db", "/var/lib/dnsm/dnsm.sqlite",
       "--ans-ttl", "20", "--neg-ttl", "100",

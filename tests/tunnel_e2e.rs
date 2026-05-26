@@ -48,10 +48,10 @@ fn tunnel_random_payloads_end_to_end() {
             return;
         }
     };
-    let client = match get_bin("dnsm-client") {
+    let client = match get_bin("dnsm") {
         Some(p) => p,
         None => {
-            eprintln!("skipping e2e tunnel test: dnsm-client binary not found");
+            eprintln!("skipping e2e tunnel test: dnsm binary not found");
             return;
         }
     };
@@ -118,7 +118,7 @@ fn tunnel_random_payloads_end_to_end() {
 
         // Launch client and feed stdin
         let mut cli = Command::new(&client)
-            .arg(zone)
+            .args(["--zone", zone])
             .args(["--resolver-ip", &bind_addr])
             .args(["--await-reply-ms", "20"]) // small ack wait keeps things orderly
             .stdin(Stdio::piped())
@@ -205,7 +205,7 @@ fn tunnel_random_payloads_end_to_end() {
         }
 
         let mut cli = Command::new(&client)
-            .arg(zone)
+            .args(["--zone", zone])
             .args(["--resolver-ip", &bind_addr])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())

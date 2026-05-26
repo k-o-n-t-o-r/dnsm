@@ -70,6 +70,9 @@ export function Splash() {
           <a href="https://pypi.org/project/dnsm/" target="_blank" rel="noopener noreferrer" className="opacity-80 hover:opacity-100 transition-opacity">
             <img src="https://img.shields.io/pypi/v/dnsm" alt="pypi" />
           </a>
+          <a href="https://www.npmjs.com/package/@k-o-n-t-o-r/dnsm" target="_blank" rel="noopener noreferrer" className="opacity-80 hover:opacity-100 transition-opacity">
+            <img src="https://img.shields.io/npm/v/%40k-o-n-t-o-r%2Fdnsm" alt="npm" />
+          </a>
         </footer>
       </div>
     </div>

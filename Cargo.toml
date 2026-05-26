@@ -1,6 +1,6 @@
 [package]
 name = "dnsm"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 authors = ["Raphael <kontor@dnsm.re>"]
 repository = "https://github.com/k-o-n-t-o-r/dnsm"
@@ -9,6 +9,12 @@ description = "Toolkit for covert data exfiltration using DNS"
 readme = "README.md"
 homepage = "https://dnsm.re"
 keywords = ["gdpr", "itsec", "security", "exfiltration", "telemetry"]
+categories = [
+    "security",
+    "command-line-utilities",
+    "network-programming",
+    "development-tools",
+]
 
 [dependencies]
 lzma-rust2 = "0.16.3"
@@ -21,7 +27,7 @@ clap = { version = "4.6.1", features = [
 console = { version = "0.16.3", optional = true }
 fastrand = { version = "2.4.1", optional = true }
 
-rusqlite = { version = "0.39.0", features = ["bundled"], optional = true }
+rusqlite = { version = "0.40.0", features = ["bundled"], optional = true }
 tokio = { version = "1.52.3", features = [
     "macros",
     "sync",
@@ -44,7 +50,7 @@ name = "dnsm"
 crate-type = ["rlib", "cdylib"]
 
 [features]
-default = ["native-cli", "sqlite"]
+default = ["native-cli"]
 
 native-cli = ["dep:clap", "dep:console", "dep:fastrand"]
 
@@ -64,11 +70,11 @@ ws-server = [
 
 [dev-dependencies]
 fastrand = "2.4.1"
-rusqlite = { version = "0.39.0", features = ["bundled"] }
+rusqlite = { version = "0.40.0", features = ["bundled"] }
 
 [[bin]]
-name = "dnsm-client"
-path = "src/bin/dnsm_client.rs"
+name = "dnsm"
+path = "src/bin/dnsm.rs"
 required-features = ["native-cli"]
 
 [[bin]]

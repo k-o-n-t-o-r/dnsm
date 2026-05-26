@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import secrets
 import socket
 import struct
 import sys
@@ -59,27 +60,82 @@ def _validate_mailbox(value: str) -> str:
     s = value.strip()
     if len(s) != 12 or not all(c in "0123456789abcdefABCDEF" for c in s):
         raise argparse.ArgumentTypeError(
-            f"invalid --mailbox '{value}': expected exactly 12 hex chars (no 0x)"
+            f"invalid mailbox '{value}': expected exactly 12 hex chars (no 0x)"
         )
     return s.lower()
 
 
+def _skip_dns_name(buf: bytes, start: int) -> int | None:
+    off = start
+    while True:
+        if off >= len(buf):
+            return None
+        b = buf[off]
+        if b == 0:
+            return off + 1
+        if b & 0xC0 == 0xC0:
+            if off + 2 > len(buf):
+                return None
+            return off + 2
+        off += 1 + b
+
+
+def _parse_dns_response(buf: bytes) -> tuple[int, int, str | None] | None:
+    if len(buf) < 12:
+        return None
+    qid = struct.unpack(">H", buf[:2])[0]
+    flags = struct.unpack(">H", buf[2:4])[0]
+    rcode = flags & 0x000F
+    ancount = struct.unpack(">H", buf[6:8])[0]
+    off = _skip_dns_name(buf, 12)
+    if off is None or off + 4 > len(buf):
+        return None
+    off += 4  # QTYPE + QCLASS
+    answer_ip = None
+    for _ in range(ancount):
+        off = _skip_dns_name(buf, off)
+        if off is None:
+            break
+        if off + 10 > len(buf):
+            break
+        rtype = struct.unpack(">H", buf[off : off + 2])[0]
+        rdlen = struct.unpack(">H", buf[off + 8 : off + 10])[0]
+        off += 10
+        if off + rdlen > len(buf):
+            break
+        if rtype == 1 and rdlen == 4 and answer_ip is None:
+            answer_ip = f"{buf[off]}.{buf[off+1]}.{buf[off+2]}.{buf[off+3]}"
+        off += rdlen
+    return (qid, rcode, answer_ip)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="dnsm-client",
+        prog="dnsm",
         description="Send data via DNS queries",
         epilog=(
             "Examples:\n"
-            "  echo 'hello' | dnsm-client x.foo.bar --dont-query\n"
-            "  echo 'hello' | dnsm-client x.foo.bar --await-reply-ms 50 --delay-ms 2 --debug\n"
-            "  head -c 200000 /dev/urandom | dnsm-client x.foo.bar --resolver-ip 127.0.0.1:5353"
+            "  echo 'hello' | dnsm\n"
+            "  echo 'hello' | dnsm abcdef123456\n"
+            "  echo 'hello' | dnsm abcdef123456 --zone x.foo.bar -n\n"
+            "  dnsm --ping\n"
+            "  head -c 200000 /dev/urandom | dnsm --resolver-ip 127.0.0.1:5353"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "zone",
+        "mailbox",
+        nargs="?",
+        metavar="MAILBOX",
+        type=_validate_mailbox,
+        default=None,
+        help="Mailbox ID (exactly 12 hex chars). Random if omitted.",
+    )
+    parser.add_argument(
+        "--zone",
         metavar="ZONE",
-        help="Zone/apex the payload labels are appended to",
+        default="k.dnsm.re",
+        help="Zone/apex the payload labels are appended to (default: k.dnsm.re)",
     )
     parser.add_argument(
         "--resolver-ip",
@@ -96,8 +152,8 @@ def main(argv: list[str] | None = None) -> None:
         "--await-reply-ms",
         metavar="MS",
         type=int,
-        default=0,
-        help="Wait up to this many ms for a reply (0 disables)",
+        default=3000,
+        help="Wait up to this many ms for a reply (0 disables, default: 3000)",
     )
     parser.add_argument(
         "--delay-ms",
@@ -112,25 +168,19 @@ def main(argv: list[str] | None = None) -> None:
         help="Append a human-readable send log to this file",
     )
     parser.add_argument(
-        "--mailbox",
-        metavar="HEX12",
-        type=_validate_mailbox,
-        help="Mailbox ID (exactly 12 hex chars)",
-    )
-    parser.add_argument(
         "--random-mailbox", action="store_true", help="Generate a random mailbox ID"
     )
     parser.add_argument(
-        "--ping", action="store_true", help="Send a minimal ping (mailbox required)"
+        "--ping", action="store_true", help="Send a minimal ping"
     )
     parser.add_argument(
         "--debug", action="store_true", help="Verbose progress to stderr"
     )
     parser.add_argument(
         "-p",
-        "--pretty",
+        "--plain",
         action="store_true",
-        help="Print colored send progress to stderr",
+        help="Suppress colored progress output (plain text only)",
     )
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
     parser.add_argument(
@@ -142,9 +192,9 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.random_mailbox and args.mailbox:
-        parser.error("--random-mailbox conflicts with --mailbox")
+        parser.error("--random-mailbox conflicts with positional MAILBOX")
 
-    use_color = args.pretty and not args.no_color
+    use_color = not args.plain and not args.no_color
 
     def _styled(tag: str, color: str, bold: bool = True) -> str:
         codes = {"green": "32", "cyan": "36", "yellow": "33", "white": "37", "dim": "2"}
@@ -156,27 +206,20 @@ def main(argv: list[str] | None = None) -> None:
             return f"\033[2m{tag}\033[0m"
         return f"\033[{prefix}{code}m{tag}\033[0m"
 
-    mailbox_hex: str | None = None
-    if args.random_mailbox:
-        mailbox_hex = f"{random.randint(0, 0xFFFF_FFFF_FFFF):012x}"
-    elif args.mailbox:
+    if args.mailbox:
         mailbox_hex = args.mailbox
+    else:
+        mailbox_hex = secrets.token_hex(6)
 
     # --- Ping mode ---
     if args.ping:
-        if mailbox_hex is None:
-            print(
-                "dnsm-client: --ping requires --mailbox or --random-mailbox",
-                file=sys.stderr,
-            )
-            sys.exit(2)
         try:
             domain = dnsm.build_human_ping_domain(mailbox_hex, args.zone)
         except ValueError as e:
-            print(f"dnsm-client: {e}", file=sys.stderr)
+            print(f"dnsm: {e}", file=sys.stderr)
             sys.exit(2)
         print(
-            f"dnsm-client: zone={args.zone} ping mailbox={mailbox_hex}",
+            f"dnsm: zone={args.zone} ping mailbox={mailbox_hex}",
             file=sys.stderr,
         )
         if args.dont_query:
@@ -187,6 +230,8 @@ def main(argv: list[str] | None = None) -> None:
             print(domain)
             return
         _send_ping(domain, host, port, args, _styled)
+        if args.zone == "k.dnsm.re":
+            print(f"\nInbox: https://dnsm.re/#/inbox/{mailbox_hex}", file=sys.stderr)
         return
 
     # --- Normal message mode ---
@@ -200,10 +245,9 @@ def main(argv: list[str] | None = None) -> None:
     try:
         domains, info = dnsm.build_domains(stdin_data, args.zone, mailbox_hex)
     except ValueError as e:
-        print(f"dnsm-client: {e}", file=sys.stderr)
+        print(f"dnsm: {e}", file=sys.stderr)
         sys.exit(2)
 
-    # Set up socket
     sock = None
     logfile = None
     if args.sent_log:
@@ -224,21 +268,21 @@ def main(argv: list[str] | None = None) -> None:
                 if args.await_reply_ms > 0:
                     sock.settimeout(args.await_reply_ms / 1000.0)
             except OSError as e:
-                print(f"dnsm-client: connect {target_str}: {e}", file=sys.stderr)
+                print(f"dnsm: connect {target_str}: {e}", file=sys.stderr)
                 sys.exit(1)
-            print(f"dnsm-client: sending via resolver {target_str}", file=sys.stderr)
-            if args.pretty:
+            print(f"dnsm: sending via resolver {target_str}", file=sys.stderr)
+            if not args.plain:
                 print(
                     f"{_styled('[INFO]', 'cyan')} {_styled('resolver', 'cyan')} {_styled(target_str, 'cyan')}",
                     file=sys.stderr,
                 )
         else:
             print(
-                "dnsm-client: no --resolver-ip and could not parse /etc/resolv.conf; printing hostnames",
+                "dnsm: no --resolver-ip and could not parse /etc/resolv.conf; printing hostnames",
                 file=sys.stderr,
             )
 
-    if args.pretty:
+    if not args.plain:
         print(
             f"{_styled('[INFO]', 'cyan')} {_styled('zone', 'dim', False)}={_styled(args.zone, 'cyan')} "
             f"{_styled('first_payload', 'dim', False)}={_styled(str(info.first_payload_len), 'cyan')} "
@@ -246,29 +290,23 @@ def main(argv: list[str] | None = None) -> None:
             f"{_styled('total_chunks', 'dim', False)}={_styled(str(info.total_chunks), 'cyan')}",
             file=sys.stderr,
         )
-        if mailbox_hex:
-            print(
-                f"{_styled('[INFO]', 'cyan')} {_styled('mailbox', 'dim', False)}={_styled(mailbox_hex, 'cyan')}  "
-                f"{_styled('View inbox at', 'white', False)} {_styled(f'https://dnsm.re/#/inbox/{mailbox_hex}', 'white')}",
-                file=sys.stderr,
-            )
-            print(file=sys.stderr)
+        print(
+            f"{_styled('[INFO]', 'cyan')} {_styled('mailbox', 'dim', False)}={_styled(mailbox_hex, 'cyan')}  "
+            f"{_styled('View inbox at', 'white', False)} {_styled(f'https://dnsm.re/#/inbox/{mailbox_hex}', 'white')}",
+            file=sys.stderr,
+        )
+        print(file=sys.stderr)
     else:
         print(
-            f"dnsm-client: zone={args.zone} first_payload={info.first_payload_len} "
+            f"dnsm: zone={args.zone} first_payload={info.first_payload_len} "
             f"payload_per_chunk={info.payload_per_chunk} total_chunks={info.total_chunks}"
-            + (f" mailbox={mailbox_hex}" if mailbox_hex else ""),
+            f" mailbox={mailbox_hex}",
             file=sys.stderr,
         )
 
     for i, qname in enumerate(domains):
         remaining = info.total_chunks - 1 - i
         if sock is not None:
-            pct = ((i + 1) / info.total_chunks * 100) if info.total_chunks else 100.0
-            print(
-                f"dnsm-client: progress {i + 1}/{info.total_chunks} ({pct:.1f}%)",
-                file=sys.stderr,
-            )
             q = _build_query(qname)
             qid = struct.unpack(">H", q[:2])[0]
             if args.debug:
@@ -277,34 +315,45 @@ def main(argv: list[str] | None = None) -> None:
                     f"labels={qname.count('.') + 1} id={qid}",
                     file=sys.stderr,
                 )
-            if args.pretty:
-                print(
-                    f"{_styled('[SEND]', 'green')} idx={i} remaining={remaining} "
-                    f"qname_len={len(qname)} labels={qname.count('.') + 1} id={qid}",
-                    file=sys.stderr,
-                )
             sock.send(q)
 
             ack_ok = False
+            resp_ip = None
             if args.await_reply_ms > 0:
                 try:
                     buf = sock.recv(512)
-                    if len(buf) >= 2:
-                        rid = struct.unpack(">H", buf[:2])[0]
-                        ack_ok = rid == qid
+                    if len(buf) >= 12:
+                        parsed = _parse_dns_response(buf)
+                        if parsed and parsed[0] == qid and parsed[1] == 0:
+                            ack_ok = True
+                            resp_ip = parsed[2]
                 except (socket.timeout, OSError):
                     pass
 
-            if args.pretty and args.await_reply_ms > 0:
+            if args.await_reply_ms > 0:
+                ip_str = f" ip={resp_ip}" if resp_ip else ""
                 if ack_ok:
-                    print(
-                        f"{_styled('[ACK]', 'green')} id={qid} idx={i}", file=sys.stderr
-                    )
+                    if not args.plain:
+                        print(
+                            f"{_styled('[OK]', 'green')} {qname}{_styled(ip_str, 'dim', False)}",
+                        )
+                    else:
+                        print(f"{qname} ok{ip_str}")
                 else:
-                    print(
-                        f"{_styled('[TIMEOUT]', 'yellow')} id={qid} idx={i} after={args.await_reply_ms}ms",
-                        file=sys.stderr,
-                    )
+                    if not args.plain:
+                        print(
+                            f"{_styled('[TIMEOUT]', 'yellow')} {qname} after={args.await_reply_ms}ms",
+                        )
+                    else:
+                        print(
+                            f"{qname} timeout after={args.await_reply_ms}ms",
+                        )
+            elif not args.plain:
+                print(
+                    f"{_styled('[SEND]', 'green')} {qname}",
+                )
+            else:
+                print(f"{qname} sent")
 
             if logfile:
                 ack_str = (
@@ -336,6 +385,9 @@ def main(argv: list[str] | None = None) -> None:
     if sock:
         sock.close()
 
+    if args.zone == "k.dnsm.re":
+        print(f"\nInbox: https://dnsm.re/#/inbox/{mailbox_hex}", file=sys.stderr)
+
 
 def _resolve_target(resolver_ip: str | None) -> tuple[str | None, int]:
     if resolver_ip:
@@ -358,27 +410,39 @@ def _send_ping(domain: str, host: str, port: int, args, _styled) -> None:
         if args.await_reply_ms > 0:
             sock.settimeout(args.await_reply_ms / 1000.0)
     except OSError as e:
-        print(f"dnsm-client: connect {target_str}: {e}", file=sys.stderr)
+        print(f"dnsm: connect {target_str}: {e}", file=sys.stderr)
         sys.exit(1)
 
     q = _build_query(domain)
     qid = struct.unpack(">H", q[:2])[0]
     sock.send(q)
-    if args.pretty:
-        print(f"{_styled('[SEND]', 'green')} ping {domain} id={qid}", file=sys.stderr)
     if args.await_reply_ms > 0:
         try:
             buf = sock.recv(512)
-            if len(buf) >= 2:
-                rid = struct.unpack(">H", buf[:2])[0]
-                if rid == qid and args.pretty:
-                    print(f"{_styled('[ACK]', 'green')} id={qid}", file=sys.stderr)
+            if len(buf) >= 12:
+                parsed = _parse_dns_response(buf)
+                if parsed and parsed[0] == qid and parsed[1] == 0:
+                    ip_str = f" ip={parsed[2]}" if parsed[2] else ""
+                    if not args.plain:
+                        print(
+                            f"{_styled('[OK]', 'green')} {domain}{_styled(ip_str, 'dim', False)}",
+                        )
+                    else:
+                        print(f"{domain} ok{ip_str}")
+                    sock.close()
+                    return
         except (socket.timeout, OSError):
-            if args.pretty:
-                print(
-                    f"{_styled('[TIMEOUT]', 'yellow')} id={qid} after={args.await_reply_ms}ms",
-                    file=sys.stderr,
-                )
+            pass
+        if not args.plain:
+            print(
+                f"{_styled('[TIMEOUT]', 'yellow')} {domain} after={args.await_reply_ms}ms",
+            )
+        else:
+            print(f"{domain} timeout after={args.await_reply_ms}ms")
+    elif not args.plain:
+        print(f"{_styled('[SEND]', 'green')} {domain}")
+    else:
+        print(f"{domain} sent")
     sock.close()
 
 

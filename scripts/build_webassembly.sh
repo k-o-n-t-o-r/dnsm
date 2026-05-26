@@ -4,10 +4,10 @@ set -eo pipefail
 # Run from repo root regardless of invocation path
 cd "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/.."
 
-export RUSTFLAGS=""
+export RUSTFLAGS="--cfg wasm_build"
 export PATH="$HOME/.cargo/bin:$PATH"
 
-cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
+cargo rustc --release --lib --no-default-features --target wasm32-unknown-unknown --crate-type cdylib
 
 if ! command -v wasm-bindgen >/dev/null 2>&1; then
   echo "error: wasm-bindgen CLI not found. Install via:"

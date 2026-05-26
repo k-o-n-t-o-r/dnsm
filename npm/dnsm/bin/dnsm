@@ -1,0 +1,48 @@
+#!/usr/bin/env node
+
+const { spawnSync } = require("child_process");
+const path = require("path");
+const fs = require("fs");
+
+const PLATFORMS = {
+  "linux-x64": "@k-o-n-t-o-r/dnsm-linux-x64",
+  "linux-arm64": "@k-o-n-t-o-r/dnsm-linux-arm64",
+  "darwin-x64": "@k-o-n-t-o-r/dnsm-darwin-x64",
+  "darwin-arm64": "@k-o-n-t-o-r/dnsm-darwin-arm64",
+};
+
+const key = `${process.platform}-${process.arch}`;
+const pkg = PLATFORMS[key];
+
+if (!pkg) {
+  console.error(`dnsm: unsupported platform ${key}`);
+  process.exit(1);
+}
+
+function findBinary() {
+  // Resolve relative to this wrapper's installation, not the caller's cwd.
+  try {
+    const resolved = path.join(
+      path.dirname(require.resolve(`${pkg}/package.json`)),
+      "bin",
+      "dnsm"
+    );
+    if (fs.existsSync(resolved)) return resolved;
+  } catch {}
+
+  // Fallback: sibling under the same node_modules tree as this script.
+  const name = pkg.split("/")[1];
+  const sibling = path.resolve(__dirname, "..", "..", name, "bin", "dnsm");
+  if (fs.existsSync(sibling)) return sibling;
+
+  return null;
+}
+
+const bin = findBinary();
+if (!bin) {
+  console.error(`dnsm: platform package ${pkg} not installed. Run: npm install`);
+  process.exit(1);
+}
+
+const result = spawnSync(bin, process.argv.slice(2), { stdio: "inherit" });
+process.exit(result.status ?? 1);

@@ -7,6 +7,11 @@ on:
         description: "SemVer (e.g. 1.2.3). Leave empty → Cargo.toml"
         required: false
         type: string
+      dry-run:
+        description: "Build everything but skip publishing"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -49,16 +54,33 @@ jobs:
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "tag=v${ver}" >> "$GITHUB_OUTPUT"
 
-  # ── Native binaries (musl, static) ──
+  # ── Native binaries ──
   build-binaries:
     name: build ${{ matrix.bin }} (${{ matrix.target }})
     needs: version
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: true
       matrix:
-        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
-        bin: [dnsm-client, dnsm-server, dnsm-ws]
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+        bin: [dnsm, dnsm-server, dnsm-ws]
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-22.04
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-22.04
+            cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-15
+            cross: false
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            cross: false
     steps:
       - uses: actions/checkout@v4
 
@@ -68,10 +90,12 @@ jobs:
           rustflags: ""
 
       - uses: mlugg/setup-zig@v1
+        if: matrix.cross
         with:
           version: 0.12.0
 
       - name: Install cargo-zigbuild
+        if: matrix.cross
         run: cargo install cargo-zigbuild --locked
 
       - name: Build
@@ -79,14 +103,18 @@ jobs:
         run: |
           set -euxo pipefail
           case "${{ matrix.bin }}" in
-            dnsm-client) FEATURES="" ;;
+            dnsm) FEATURES="" ;;
             dnsm-server) FEATURES="sqlite" ;;
             dnsm-ws)     FEATURES="sqlite,ws-server" ;;
           esac
+          FEAT_ARGS=""
           if [ -n "$FEATURES" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }} --bin ${{ matrix.bin }} --features "$FEATURES"
+            FEAT_ARGS="--features $FEATURES"
+          fi
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cargo zigbuild --release --target ${{ matrix.target }} --bin ${{ matrix.bin }} $FEAT_ARGS
           else
-            cargo zigbuild --release --target ${{ matrix.target }} --bin ${{ matrix.bin }}
+            cargo build --release --target ${{ matrix.target }} --bin ${{ matrix.bin }} $FEAT_ARGS
           fi
 
       - name: Package
@@ -98,10 +126,10 @@ jobs:
           outdir="dist/${{ matrix.target }}"
           mkdir -p "$outdir"
           cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "$outdir/"
-          strip -s "$outdir/${{ matrix.bin }}" || true
+          strip "$outdir/${{ matrix.bin }}" || true
           tar_name="${{ matrix.bin }}-${VERSION}-${{ matrix.target }}.tar.gz"
           tar czf "$tar_name" -C "$outdir" "${{ matrix.bin }}"
-          sha256sum "$tar_name" > "$tar_name.sha256"
+          shasum -a 256 "$tar_name" > "$tar_name.sha256" 2>/dev/null || sha256sum "$tar_name" > "$tar_name.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -114,12 +142,29 @@ jobs:
   build-wheels:
     name: wheel ${{ matrix.target }} py${{ matrix.python }}
     needs: version
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: true
       matrix:
-        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
         python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            manylinux: "2_17"
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            manylinux: "2_17"
+          - target: x86_64-apple-darwin
+            runner: macos-15
+            manylinux: "off"
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            manylinux: "off"
     steps:
       - uses: actions/checkout@v4
 
@@ -131,8 +176,8 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          manylinux: 2_17
-          args: --release --no-default-features --features python -i python${{ matrix.python }} --zig
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --no-default-features --features python -i python${{ matrix.python }} ${{ matrix.manylinux != 'off' && '--zig' || '' }}
           sccache: false
 
       - uses: actions/upload-artifact@v4
@@ -187,12 +232,12 @@ jobs:
             file: docker/Dockerfile.dnsm-ws
             arch: arm64
             platform: linux/arm64
-          - image: dnsm-client
-            file: docker/Dockerfile.dnsm-client
+          - image: dnsm
+            file: docker/Dockerfile.dnsm
             arch: amd64
             platform: linux/amd64
-          - image: dnsm-client
-            file: docker/Dockerfile.dnsm-client
+          - image: dnsm
+            file: docker/Dockerfile.dnsm
             arch: arm64
             platform: linux/arm64
     steps:
@@ -249,6 +294,65 @@ jobs:
       - name: Verify crate packages correctly
         run: cargo publish --dry-run
 
+  # ── npm packages (assemble from binary artifacts) ──
+  build-npm:
+    name: npm packages
+    needs: [version, build-binaries]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-dnsm-*
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: Assemble npm packages
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euxo pipefail
+
+          # linux-x64
+          mkdir -p npm/linux-x64/bin
+          tar xzf "artifacts/dnsm-${VERSION}-x86_64-unknown-linux-musl.tar.gz" -C npm/linux-x64/bin
+          chmod +x npm/linux-x64/bin/dnsm
+
+          # linux-arm64
+          mkdir -p npm/linux-arm64/bin
+          tar xzf "artifacts/dnsm-${VERSION}-aarch64-unknown-linux-musl.tar.gz" -C npm/linux-arm64/bin
+          chmod +x npm/linux-arm64/bin/dnsm
+
+          # darwin-x64
+          mkdir -p npm/darwin-x64/bin
+          tar xzf "artifacts/dnsm-${VERSION}-x86_64-apple-darwin.tar.gz" -C npm/darwin-x64/bin
+          chmod +x npm/darwin-x64/bin/dnsm
+
+          # darwin-arm64
+          mkdir -p npm/darwin-arm64/bin
+          tar xzf "artifacts/dnsm-${VERSION}-aarch64-apple-darwin.tar.gz" -C npm/darwin-arm64/bin
+          chmod +x npm/darwin-arm64/bin/dnsm
+
+          # Stamp version in all package.json files
+          for pkg in npm/dnsm npm/linux-x64 npm/linux-arm64 npm/darwin-x64 npm/darwin-arm64; do
+            jq --arg v "$VERSION" '.version = $v' "$pkg/package.json" > tmp.json && mv tmp.json "$pkg/package.json"
+          done
+          # Update optionalDependencies versions in wrapper
+          jq --arg v "$VERSION" '.optionalDependencies |= with_entries(.value = $v)' npm/dnsm/package.json > tmp.json && mv tmp.json npm/dnsm/package.json
+
+          cp README.md npm/dnsm/README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-packages
+          path: npm/
+
   # ── WASM + web build ──
   build-web:
     name: wasm + web
@@ -290,7 +394,8 @@ jobs:
   # ── GitHub Release ──
   release:
     name: github release
-    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    if: ${{ !inputs.dry-run }}
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web, build-npm]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -334,7 +439,8 @@ jobs:
   # ── PyPI ──
   publish-pypi:
     name: publish pypi
-    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    if: ${{ !inputs.dry-run }}
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web, build-npm]
     runs-on: ubuntu-22.04
     permissions:
       id-token: write
@@ -352,7 +458,8 @@ jobs:
   # ── Crates.io ──
   publish-crate:
     name: publish crates.io
-    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    if: ${{ !inputs.dry-run }}
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web, build-npm]
     runs-on: ubuntu-22.04
     permissions:
       id-token: write
@@ -372,7 +479,8 @@ jobs:
   # ── Docker push + manifests ──
   publish-docker:
     name: push docker images
-    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web]
+    if: ${{ !inputs.dry-run }}
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web, build-npm]
     runs-on: ubuntu-22.04
     strategy:
       matrix:
@@ -393,12 +501,12 @@ jobs:
             file: docker/Dockerfile.dnsm-ws
             arch: arm64
             platform: linux/arm64
-          - image: dnsm-client
-            file: docker/Dockerfile.dnsm-client
+          - image: dnsm
+            file: docker/Dockerfile.dnsm
             arch: amd64
             platform: linux/amd64
-          - image: dnsm-client
-            file: docker/Dockerfile.dnsm-client
+          - image: dnsm
+            file: docker/Dockerfile.dnsm
             arch: arm64
             platform: linux/arm64
     steps:
@@ -439,9 +547,38 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
 
+  # ── npm ──
+  publish-npm:
+    name: publish npm
+    if: ${{ !inputs.dry-run }}
+    needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web, build-npm]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-packages
+          path: npm/
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish platform packages then wrapper
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euxo pipefail
+          for pkg in npm/linux-x64 npm/linux-arm64 npm/darwin-x64 npm/darwin-arm64; do
+            npm publish "$pkg" --access public
+          done
+          npm publish npm/dnsm --access public
+
   # ── Docker multi-arch manifests ──
   docker-manifests:
     name: docker manifests
+    if: ${{ !inputs.dry-run }}
     needs: [version, publish-docker]
     runs-on: ubuntu-22.04
     steps:
@@ -460,7 +597,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euxo pipefail
-          for img in dnsm-server dnsm-ws dnsm-client; do
+          for img in dnsm-server dnsm-ws dnsm; do
             for t in "v${VERSION}" "${VERSION}" latest; do
               docker buildx imagetools create \
                 --tag "ghcr.io/${OWNER}/${img}:${t}" \
