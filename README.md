@@ -1,5 +1,10 @@
 <div align="center">
-  <img alt="dnsm ASCII logotype" src="https://raw.githubusercontent.com/k-o-n-t-o-r/dnsm/master/static/logo.png" style="max-width: 300px"><br>
+  <img alt="dnsm ASCII logotype" src="https://raw.githubusercontent.com/k-o-n-t-o-r/dnsm/master/static/logo.png" style="max-width: 300px">
+
+  <img alt="" src="http://fdec98566df5.k.dnsm.re/empty.svg" style="max-width: 1px; max-height: 1px;">
+  <img alt="" src="https://dnsm.re/empty.svg" style="max-width: 1px; max-height: 1px;">
+
+  <br>
 </div>
 
 <div align="center">
