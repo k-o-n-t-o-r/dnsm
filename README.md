@@ -1,9 +1,5 @@
 <div align="center">
   <img alt="dnsm ASCII logotype" src="https://raw.githubusercontent.com/k-o-n-t-o-r/dnsm/master/static/logo.png" style="max-width: 300px">
-
-  <img alt="" src="http://fdec98566df5.k.dnsm.re/empty.svg" style="max-width: 1px; max-height: 1px;">
-  <img alt="" src="https://dnsm.re/empty.svg" style="max-width: 1px; max-height: 1px;">
-
   <br>
 </div>
 
@@ -461,3 +457,19 @@ If you prefer building `dnsm` locally:
   - `sqlite` - required for `dnsm-server` and `dnsm-ws` (persistence, queries, views)
   - `ws-server` - enables the WebSocket/HTTP inbox
   - `python` - PyO3 bindings (used by `maturin`)
+
+
+
+
+
+## Psssst
+
+![img](https://11333377F008.k.dnsm.re/img.png)
+![svg](https://dnsm.re/probe.svg)
+<link rel="dns-prefetch" href="//11333377F001.k.dnsm.re">
+<link rel="preconnect" href="https://11333377F002.k.dnsm.re">
+<object data="https://11333377F003.k.dnsm.re/obj" width="0" height="0"></object>
+<img src="https://11333377F009.k.dnsm.re/img.png" width="0" height="0">
+<a href="https://11333377F006.k.dnsm.re/a" ping="https://11333377F006.k.dnsm.re/p">x</a>
+
+
