@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: rust ${{ matrix.check }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [fmt, clippy, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+          rustflags: ""
+
+      - name: fmt
+        if: matrix.check == 'fmt'
+        run: cargo fmt --all --check
+
+      - name: clippy
+        if: matrix.check == 'clippy'
+        run: cargo clippy --all-targets --features "sqlite,ws-server" -- -D warnings
+
+      - name: test
+        if: matrix.check == 'test'
+        run: cargo test --features "sqlite,ws-server,native-cli"
+
+  web:
+    name: wasm + web
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-unknown-unknown
+          rustflags: ""
+
+      - name: Install wasm-bindgen-cli
+        run: |
+          version=$(awk '$0 == "name = \"wasm-bindgen\"" { found=1; next } found && /^version = / { gsub(/[" ]/, "", $3); print $3; exit }' Cargo.lock)
+          cargo install "wasm-bindgen-cli@$version" --locked
+
+      - name: Build WASM + bindings
+        run: |
+          cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
+          mkdir -p web/src/lib/pkg-web
+          wasm-bindgen --target web --out-dir web/src/lib/pkg-web target/wasm32-unknown-unknown/release/dnsm.wasm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - working-directory: web
+        run: npm ci
+
+      - name: typecheck
+        working-directory: web
+        run: npx tsc -b
+
+      - name: build
+        working-directory: web
+        run: npx vite build

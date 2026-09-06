@@ -16,7 +16,7 @@ fn find_free_port() -> u16 {
 }
 
 fn get_bin(name: &str) -> Option<String> {
-    let key = format!("CARGO_BIN_EXE_{}", name.replace('-', "_"));
+    let key = format!("CARGO_BIN_EXE_{}", name);
     if let Ok(p) = std::env::var(&key)
         && Path::new(&p).exists()
     {

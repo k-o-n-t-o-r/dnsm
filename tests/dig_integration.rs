@@ -36,7 +36,7 @@ fn dig_queries_are_logged() {
         return;
     }
 
-    let server_path = std::env::var("CARGO_BIN_EXE_dnsm_server")
+    let server_path = std::env::var("CARGO_BIN_EXE_dnsm-server")
         .unwrap_or_else(|_| "./target/release/dnsm-server".to_string());
     if !Path::new(&server_path).exists() {
         eprintln!(
@@ -138,7 +138,7 @@ fn dig_edns_opt_echoed_in_response() {
         return;
     }
 
-    let server_path = std::env::var("CARGO_BIN_EXE_dnsm_server")
+    let server_path = std::env::var("CARGO_BIN_EXE_dnsm-server")
         .unwrap_or_else(|_| "./target/release/dnsm-server".to_string());
     if !Path::new(&server_path).exists() {
         eprintln!(

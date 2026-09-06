@@ -55,7 +55,7 @@ fn dig_mailbox_txt_returns_messages() {
         return;
     }
 
-    let server_path = std::env::var("CARGO_BIN_EXE_dnsm_server")
+    let server_path = std::env::var("CARGO_BIN_EXE_dnsm-server")
         .unwrap_or_else(|_| "./target/release/dnsm-server".to_string());
     if !Path::new(&server_path).exists() {
         eprintln!("skipping: server binary not found at {}", server_path);
@@ -154,7 +154,7 @@ fn dig_mailbox_txt_dedupes_messages() {
         return;
     }
 
-    let server_path = std::env::var("CARGO_BIN_EXE_dnsm_server")
+    let server_path = std::env::var("CARGO_BIN_EXE_dnsm-server")
         .unwrap_or_else(|_| "./target/release/dnsm-server".to_string());
     if !std::path::Path::new(&server_path).exists() {
         eprintln!("skipping: server binary not found at {}", server_path);
@@ -255,7 +255,7 @@ fn dig_mailbox_txt_paging_by_message_returns_older() {
         return;
     }
 
-    let server_path = std::env::var("CARGO_BIN_EXE_dnsm_server")
+    let server_path = std::env::var("CARGO_BIN_EXE_dnsm-server")
         .unwrap_or_else(|_| "./target/release/dnsm-server".to_string());
     if !std::path::Path::new(&server_path).exists() {
         eprintln!("skipping: server binary not found at {}", server_path);
