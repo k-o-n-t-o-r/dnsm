@@ -57,8 +57,7 @@ fn await_reply_ms_defaults_to_3000() {
 
 #[test]
 fn random_mailbox_flag_sets_field() {
-    let args =
-        ClientArgs::try_parse_from(["dnsm", "--random-mailbox"]).expect("should parse");
+    let args = ClientArgs::try_parse_from(["dnsm", "--random-mailbox"]).expect("should parse");
     assert!(args.random_mailbox);
     assert!(args.mailbox.is_none());
 }

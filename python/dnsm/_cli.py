@@ -321,7 +321,7 @@ def main(argv: list[str] | None = None) -> None:
             resp_ip = None
             if args.await_reply_ms > 0:
                 try:
-                    buf = sock.recv(512)
+                    buf = sock.recv(4096)
                     if len(buf) >= 12:
                         parsed = _parse_dns_response(buf)
                         if parsed and parsed[0] == qid and parsed[1] == 0:
@@ -418,7 +418,7 @@ def _send_ping(domain: str, host: str, port: int, args, _styled) -> None:
     sock.send(q)
     if args.await_reply_ms > 0:
         try:
-            buf = sock.recv(512)
+            buf = sock.recv(4096)
             if len(buf) >= 12:
                 parsed = _parse_dns_response(buf)
                 if parsed and parsed[0] == qid and parsed[1] == 0:

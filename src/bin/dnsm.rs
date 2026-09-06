@@ -264,10 +264,7 @@ fn main() -> io::Result<()> {
                     use std::io::Read;
                     f.read_exact(&mut buf)
                 })
-                .unwrap_or_else(|_| {
-                    let v = fastrand::u64(..) & 0x0000_FFFF_FFFF_FFFF;
-                    buf.copy_from_slice(&v.to_be_bytes()[2..]);
-                });
+                .expect("failed to read /dev/urandom for random mailbox ID");
             format!(
                 "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
                 buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]
