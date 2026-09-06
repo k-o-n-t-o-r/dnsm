@@ -10,7 +10,6 @@ import { validateMailbox, randomMailbox } from "@/lib/utils"
 interface DecodedPayload {
   type: "text" | "json" | "binary" | "invalid" | "ping"
   content: string
-  raw: string
 }
 
 interface Message {
@@ -37,7 +36,7 @@ function toHex(bytes: Uint8Array): string {
 
 function decodePayload(b64: string, messageType?: string): DecodedPayload {
   if (messageType === "ping") {
-    return { type: "ping", content: "", raw: "" }
+    return { type: "ping", content: "" }
   }
   try {
     const bin = atob(b64)
@@ -58,14 +57,14 @@ function decodePayload(b64: string, messageType?: string): DecodedPayload {
       ) {
         try {
           const parsed = JSON.parse(text)
-          return { type: "json", content: JSON.stringify(parsed, null, 2), raw: b64 }
+          return { type: "json", content: JSON.stringify(parsed, null, 2) }
         } catch { /* not valid json */ }
       }
-      return { type: "text", content: text, raw: b64 }
+      return { type: "text", content: text }
     }
-    return { type: "binary", content: toHex(bytes), raw: b64 }
+    return { type: "binary", content: toHex(bytes) }
   } catch (e) {
-    return { type: "invalid", content: `Invalid base64: ${e}`, raw: b64 }
+    return { type: "invalid", content: `Invalid base64: ${e}` }
   }
 }
 
@@ -87,13 +86,28 @@ function formatReceivedAt(value: unknown): string {
   return formatDate(date)
 }
 
+function isDnsmHost(hostname: string): boolean {
+  const h = hostname.toLowerCase()
+  return h === "dnsm.re" || h.endsWith(".dnsm.re")
+}
+
 function normalizeHttp(base: string, fallback: string): string {
   const h = (base || "").trim()
   if (!h) return fallback
-  if (h.startsWith("http://") || h.startsWith("https://")) return h
-  if (h.includes("dnsm.re")) return "https://" + h
-  const scheme = location.protocol === "https:" ? "https://" : "http://"
-  return scheme + h
+  const withScheme = h.includes("://") ? h : `http://${h}`
+  try {
+    const u = new URL(withScheme)
+    if (u.username || u.password) return fallback
+    if (isDnsmHost(u.hostname)) {
+      u.protocol = "https:"
+      return u.toString().replace(/\/$/, "")
+    }
+    const scheme = location.protocol === "https:" ? "https:" : "http:"
+    u.protocol = scheme
+    return u.toString().replace(/\/$/, "")
+  } catch {
+    return fallback
+  }
 }
 
 function toWsUrl(httpBase: string): string {
@@ -130,6 +144,7 @@ export function Inbox() {
   const [status, setStatus] = useState<{ text: string; level: StatusLevel }>({ text: "Idle", level: "idle" })
   const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set())
   const [wasmModule, setWasmModule] = useState<WasmModule | null>(null)
+  const [wasmFailed, setWasmFailed] = useState(false)
   const [genMessage, setGenMessage] = useState("")
   const [genDomains, setGenDomains] = useState<string[]>([])
   const [genError, setGenError] = useState("")
@@ -145,15 +160,17 @@ export function Inbox() {
   const parentZone = zone.split(".").slice(1).join(".") || zone
   const mailboxZone = `m.${parentZone}`
 
+  const connectRef = useRef<(opts?: { mailbox?: string; host?: string; replace?: boolean }) => Promise<void>>(null!)
+
   const scheduleReconnect = useCallback(() => {
     if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+    const delay = reconnectDelayRef.current
     reconnectTimerRef.current = setTimeout(
-      () => connect({ mailbox: activeMailboxRef.current, host: activeHostRef.current }),
-      reconnectDelayRef.current,
+      () => connectRef.current({ mailbox: activeMailboxRef.current, host: activeHostRef.current }),
+      delay,
     )
-    reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 20000)
-    setStatus({ text: `Reconnecting in ${Math.round(reconnectDelayRef.current / 1000)}s...`, level: "warn" })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setStatus({ text: `Reconnecting in ${Math.round(delay / 1000)}s...`, level: "warn" })
+    reconnectDelayRef.current = Math.min(delay * 2, 20000)
   }, [])
 
   const connect = useCallback(async (opts?: { mailbox?: string; host?: string; replace?: boolean }) => {
@@ -164,6 +181,8 @@ export function Inbox() {
       setStatus({ text: "Mailbox must be 12 lowercase hex chars", level: "bad" })
       return
     }
+
+    const targetChanged = validated !== activeMailboxRef.current || effectiveHost !== activeHostRef.current
 
     const gen = ++generationRef.current
     if (abortRef.current) abortRef.current.abort()
@@ -182,7 +201,7 @@ export function Inbox() {
     }
 
     setStatus({ text: "Connecting...", level: "warn" })
-    setMessages([])
+    if (targetChanged) setMessages([])
 
     const prevWs = wsRef.current
     wsRef.current = null
@@ -193,10 +212,12 @@ export function Inbox() {
       clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
     }
-    reconnectDelayRef.current = 1000
+    if (targetChanged) reconnectDelayRef.current = 1000
 
     let wsBase: string
     let backlogOk = false
+    let backlogCursor: number | null = null
+    let historyTruncated = false
     let timedOut = false
     try {
       const fallback = `${window.location.protocol}//${window.location.host}`
@@ -213,10 +234,22 @@ export function Inbox() {
           if (gen !== generationRef.current) return
           if (Array.isArray(arr)) {
             backlogOk = true
-            setMessages(arr.reverse().map((m: { data_b64: string; message_type?: string }) => ({
+            historyTruncated = res.headers.get("x-dnsm-history-truncated") === "true"
+            const ids = arr
+              .map((m: { id?: unknown }) => Number(m.id))
+              .filter((value: number) => Number.isSafeInteger(value) && value >= 0)
+            backlogCursor = ids.length > 0 ? Math.max(...ids) : 0
+            const history = arr.reverse().map((m: { id: unknown; data_b64: string; message_type?: string }) => ({
               ...m,
+              id: String(m.id),
               payload: decodePayload(m.data_b64, m.message_type),
-            } as Message)))
+            } as Message))
+            setMessages((previous) => {
+              if (targetChanged) return history
+              const historyIds = new Set(history.map((message: Message) => message.id))
+              return [...previous.filter((message) => !historyIds.has(message.id)), ...history]
+                .sort((a, b) => Number(a.id) - Number(b.id))
+            })
           }
         } else {
           setStatus({ text: `Backlog fetch failed: HTTP ${res.status}`, level: "warn" })
@@ -240,13 +273,16 @@ export function Inbox() {
     if (gen !== generationRef.current) return
 
     try {
-      const ws = new WebSocket(`${wsBase}/ws/${validated}`)
+      const cursor = backlogCursor === null ? "" : `?after_id=${backlogCursor}`
+      const ws = new WebSocket(`${wsBase}/ws/${validated}${cursor}`)
       wsRef.current = ws
 
       ws.addEventListener("open", () => {
         if (gen !== generationRef.current) { ws.close(); return }
         setStatus(backlogOk
-          ? { text: "Connected", level: "good" }
+          ? historyTruncated
+            ? { text: "Connected - showing recent history", level: "warn" }
+            : { text: "Connected", level: "good" }
           : { text: "Connected - history unavailable", level: "warn" })
         reconnectDelayRef.current = 1000
       })
@@ -263,8 +299,11 @@ export function Inbox() {
         if (gen !== generationRef.current) return
         try {
           const m = JSON.parse(ev.data)
-          const msg: Message = { ...m, payload: decodePayload(m.data_b64, m.message_type) }
-          setMessages((prev) => [...prev, msg])
+          const msg: Message = { ...m, id: String(m.id), payload: decodePayload(m.data_b64, m.message_type) }
+          setMessages((prev) => {
+            if (prev.some((p) => String(p.id) === msg.id)) return prev
+            return [...prev, msg]
+          })
         } catch { /* ignore */ }
       })
     } catch (e) {
@@ -274,6 +313,8 @@ export function Inbox() {
     }
   }, [host, mailbox, defaultHost, navigate, scheduleReconnect, location.pathname, location.search])
 
+  connectRef.current = connect
+
   useEffect(() => {
     window.scrollTo({ top: document.documentElement.scrollHeight })
   }, [messages])
@@ -282,7 +323,7 @@ export function Inbox() {
     import("@/lib/pkg-web/dnsm.js").then(async (mod) => {
       await mod.default()
       setWasmModule(mod as unknown as WasmModule)
-    }).catch(() => { /* wasm load failed */ })
+    }).catch(() => { setWasmFailed(true) })
 
     return () => {
       generationRef.current++
@@ -292,7 +333,7 @@ export function Inbox() {
       if (ws) try { ws.close() } catch { /* ignore */ }
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [])
 
   const routeSearch = location.search
@@ -319,7 +360,7 @@ export function Inbox() {
     setMailbox(mb)
     setHost(effectiveHost)
     setTimeout(() => connect({ mailbox: mb, host: effectiveHost, replace: true }), 0)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [id, routeSearch])
 
   useEffect(() => {
@@ -465,7 +506,7 @@ export function Inbox() {
         </div>
         <div className="flex items-center gap-2 mb-2">
           <span className="text-xs text-muted-foreground">
-            {wasmModule ? "Auto-generating as you type" : "Loading Wasm..."}
+            {wasmModule ? "Auto-generating as you type" : wasmFailed ? "Wasm failed to load" : "Loading Wasm..."}
           </span>
           <span className="flex-1" />
           <Button

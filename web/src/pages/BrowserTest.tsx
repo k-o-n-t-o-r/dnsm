@@ -213,11 +213,17 @@ async function viaWebRTC(domain: string) {
 }
 
 function viaAnchors(domain: string) {
-  const a = document.createElement("a")
+  const iframe = document.createElement("iframe")
+  iframe.style.display = "none"
+  document.body.appendChild(iframe)
+  const doc = iframe.contentDocument
+  if (!doc) { iframe.remove(); return Promise.resolve() }
+  const a = doc.createElement("a")
   a.href = "https://" + domain + "/a?t=" + Date.now()
   a.rel = "noreferrer"; a.ping = "https://" + domain + "/p"
-  a.style.position = "absolute"; a.style.left = "-9999px"
-  document.body.appendChild(a); return Promise.resolve()
+  doc.body.appendChild(a); a.click()
+  setTimeout(() => iframe.remove(), 2000)
+  return Promise.resolve()
 }
 
 function viaSpeculationPrefetch(domain: string) {
@@ -329,7 +335,7 @@ export function BrowserTest() {
     return () => {
       if (wsRef.current) try { wsRef.current.close() } catch { /* */ }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, [])
 
   async function startTest() {
