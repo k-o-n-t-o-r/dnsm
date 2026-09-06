@@ -17,7 +17,7 @@ LABEL org.opencontainers.image.title="dnsm-ws" \
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
     rm -rf /var/lib/apt/lists/*; \
     adduser --system --group --no-create-home dnsm; \
     mkdir -p /var/lib/dnsm; \
@@ -28,11 +28,10 @@ COPY --from=build /usr/local/cargo/bin/dnsm-ws /usr/local/bin/dnsm-ws
 USER dnsm:dnsm
 WORKDIR /app
 
-ENV DNSM_WS_BIND=0.0.0.0:8787 \
-    DNSM_DB=/var/lib/dnsm/dnsm.sqlite \
-    DNSM_WS_POLL_MS=1000
-
 EXPOSE 8787
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD curl -sf http://localhost:8787/healthz || exit 1
 
 # Use an entrypoint and let the user pass flags via docker run or compose
 ENTRYPOINT ["/usr/local/bin/dnsm-ws"]

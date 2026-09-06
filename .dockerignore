@@ -3,11 +3,11 @@ target
 .gitignore
 pkg
 pkg-web
-node_modules
-*.log
-*.sqlite
-*.sqlite-journal
-*.sqlite3
+**/node_modules
+**/*.log
+**/*.sqlite
+**/*.sqlite-journal
+**/*.sqlite3
 Dockerfile
 docker-compose.yml
 **/.DS_Store
@@ -16,3 +16,5 @@ static
 examples
 scripts
 notes.txt
+local/
+server_data_backup/
