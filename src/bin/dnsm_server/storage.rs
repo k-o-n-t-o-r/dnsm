@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS messages (
     peer_ip TEXT CHECK(peer_ip IS NULL OR length(peer_ip) <= 45)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_mailbox ON messages(mailbox);
+CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received
+    ON messages(mailbox, received_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_mailbox_id ON messages(mailbox, id);
 CREATE INDEX IF NOT EXISTS idx_messages_key ON messages(message_key);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_messages_mailbox_msgid
     ON messages(mailbox, message_id)
@@ -157,7 +160,9 @@ pub(crate) fn run_migrations(db: &Connection) -> rusqlite::Result<()> {
         )?;
     }
     db.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_messages_null_mailbox_msgid ON messages(message_id) WHERE mailbox IS NULL AND message_id IS NOT NULL;",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_messages_null_mailbox_msgid ON messages(message_id) WHERE mailbox IS NULL AND message_id IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_messages_mailbox_received ON messages(mailbox, received_at DESC, id DESC);
+         CREATE INDEX IF NOT EXISTS idx_messages_mailbox_id ON messages(mailbox, id);",
     )?;
     Ok(())
 }

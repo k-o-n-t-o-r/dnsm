@@ -395,8 +395,16 @@ pub(crate) fn sanitize_domain_for_logging(domain: &str) -> String {
 }
 
 fn decompress_lzma_mem(input: &[u8], max_bytes: u32) -> Result<Vec<u8>, String> {
-    let mem_limit = if max_bytes == 0 { u32::MAX } else { max_bytes };
-    let mut reader = lzma_rust2::LzmaReader::new_mem_limit(Cursor::new(input), mem_limit, None)
+    // new_mem_limit takes KiB; cap decoder memory (dict + state) independently
+    // of output size. 40MB allows dict sizes up to ~32MB which covers all
+    // standard LZMA presets; max_bytes separately caps output.
+    const DECODER_MEM_LIMIT_KB: u32 = 40 * 1024;
+    let mem_limit_kb = if max_bytes == 0 {
+        u32::MAX
+    } else {
+        DECODER_MEM_LIMIT_KB
+    };
+    let mut reader = lzma_rust2::LzmaReader::new_mem_limit(Cursor::new(input), mem_limit_kb, None)
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     if max_bytes > 0 {
@@ -412,9 +420,7 @@ fn decompress_lzma_mem(input: &[u8], max_bytes: u32) -> Result<Vec<u8>, String> 
             let error_message =
                 || format!("Decompressed payload exceeds limit of {} bytes.", max_bytes);
 
-            total_read = total_read
-                .checked_add(n as u32)
-                .ok_or_else(&error_message)?;
+            total_read = total_read.checked_add(n as u32).ok_or_else(error_message)?;
 
             if total_read > max_bytes {
                 return Err(error_message());
@@ -436,11 +442,60 @@ fn log_event(log: &mut BufWriter<std::fs::File>, now: u128, event: &str, rest_fi
     );
 }
 
+fn chunk_fits_limits(
+    assembly_bytes: usize,
+    assembly_chunks: usize,
+    total_assembly_bytes: usize,
+    total_assembly_chunks: usize,
+    chunk_bytes: usize,
+    cfg: &crate::ServerCfg,
+) -> bool {
+    assembly_chunks < cfg.max_assembly_chunks
+        && total_assembly_chunks < cfg.max_total_assembly_chunks
+        && assembly_bytes.saturating_add(chunk_bytes) <= cfg.max_assembly_bytes
+        && total_assembly_bytes.saturating_add(chunk_bytes) <= cfg.max_total_assembly_bytes
+}
+
+fn release_assembly_storage(
+    assembly: &mut crate::Assembly,
+    total_assembly_chunks: &mut usize,
+    total_assembly_bytes: &mut usize,
+) {
+    *total_assembly_chunks = total_assembly_chunks.saturating_sub(assembly.chunks.len());
+    *total_assembly_bytes = total_assembly_bytes.saturating_sub(assembly.stored_bytes);
+    assembly.chunks.clear();
+    assembly.have_r.clear();
+    assembly.stored_bytes = 0;
+}
+
+fn remove_assembly(
+    assemblies: &mut HashMap<u64, crate::Assembly>,
+    total_assembly_chunks: &mut usize,
+    total_assembly_bytes: &mut usize,
+    sid: u64,
+) -> Option<crate::Assembly> {
+    let assembly = assemblies.remove(&sid)?;
+    *total_assembly_chunks = total_assembly_chunks.saturating_sub(assembly.chunks.len());
+    *total_assembly_bytes = total_assembly_bytes.saturating_sub(assembly.stored_bytes);
+    Some(assembly)
+}
+
+fn finish_assembly(
+    assembly: &mut crate::Assembly,
+    total_assembly_chunks: &mut usize,
+    total_assembly_bytes: &mut usize,
+) {
+    assembly.completed = true;
+    release_assembly_storage(assembly, total_assembly_chunks, total_assembly_bytes);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_handle_dnsm(
     full_domain: &str,
     cfg: &crate::ServerCfg,
     assemblies: &mut HashMap<u64, crate::Assembly>,
+    total_assembly_chunks: &mut usize,
+    total_assembly_bytes: &mut usize,
     now: u128,
     log: &mut BufWriter<std::fs::File>,
     peer: SocketAddr,
@@ -820,13 +875,22 @@ pub(crate) fn try_handle_dnsm(
 
     let sid = message_key;
 
+    if header.is_first && usize::from(header.remaining) + 1 > cfg.max_assembly_chunks {
+        return;
+    }
+
     if !assemblies.contains_key(&sid)
         && assemblies.len() >= cfg.max_assemblies
         && let Some((&oldest_sid, _)) = assemblies
             .iter()
             .min_by_key(|(_, assembly)| assembly.last_seen)
     {
-        assemblies.remove(&oldest_sid);
+        remove_assembly(
+            assemblies,
+            total_assembly_chunks,
+            total_assembly_bytes,
+            oldest_sid,
+        );
     }
 
     let sess = assemblies
@@ -835,29 +899,67 @@ pub(crate) fn try_handle_dnsm(
     sess.last_seen = now;
     if sess.completed {
         if header.is_first && mailbox != sess.mailbox {
+            release_assembly_storage(sess, total_assembly_chunks, total_assembly_bytes);
             *sess = crate::Assembly::new(now);
         } else {
             return;
         }
     }
     if header.is_first {
-        if sess.rmax.is_some() && mailbox != sess.mailbox {
+        if let Some(existing_rmax) = sess.rmax {
+            if existing_rmax != header.remaining || mailbox != sess.mailbox {
+                return;
+            }
+        } else {
+            sess.rmax = Some(header.remaining);
+            sess.mailbox = mailbox;
+        }
+
+        let mut removed_chunks = 0usize;
+        let mut removed_bytes = 0usize;
+        sess.chunks.retain(|&r, data| {
+            let keep = r <= header.remaining;
+            if !keep {
+                removed_chunks = removed_chunks.saturating_add(1);
+                removed_bytes = removed_bytes.saturating_add(data.len());
+            }
+            keep
+        });
+        sess.have_r.retain(|&r| r <= header.remaining);
+        sess.stored_bytes = sess.stored_bytes.saturating_sub(removed_bytes);
+        *total_assembly_chunks = total_assembly_chunks.saturating_sub(removed_chunks);
+        *total_assembly_bytes = total_assembly_bytes.saturating_sub(removed_bytes);
+    }
+    if let Some(rm) = sess.rmax {
+        if header.remaining > rm {
             return;
         }
-        sess.rmax = Some(header.remaining);
-        sess.mailbox = mailbox;
-    }
-    let data = bytes[offset..].to_vec();
-    if let Some(prev) = sess.chunks.get(&header.remaining)
-        && prev != &data
-    {
+    } else if sess.chunks.len() >= 1024.min(cfg.max_assembly_chunks) {
         return;
     }
-    sess.chunks.insert(header.remaining, data);
-    sess.have_r.insert(header.remaining);
-    if header.is_first {
-        sess.recv_unique += 1;
+
+    let chunk_data = &bytes[offset..];
+    if let Some(previous) = sess.chunks.get(&header.remaining) {
+        if previous.as_slice() != chunk_data {
+            return;
+        }
+    } else {
+        if !chunk_fits_limits(
+            sess.stored_bytes,
+            sess.chunks.len(),
+            *total_assembly_bytes,
+            *total_assembly_chunks,
+            chunk_data.len(),
+            cfg,
+        ) {
+            return;
+        }
+        sess.chunks.insert(header.remaining, chunk_data.to_vec());
+        sess.stored_bytes = sess.stored_bytes.saturating_add(chunk_data.len());
+        *total_assembly_chunks = total_assembly_chunks.saturating_add(1);
+        *total_assembly_bytes = total_assembly_bytes.saturating_add(chunk_data.len());
     }
+    sess.have_r.insert(header.remaining);
 
     if let Some(rm) = sess.rmax {
         if (rm as usize + 1) == sess.have_r.len() {
@@ -891,6 +993,7 @@ pub(crate) fn try_handle_dnsm(
                             err
                         );
                     }
+                    finish_assembly(sess, total_assembly_chunks, total_assembly_bytes);
                     return;
                 }
             };
@@ -913,6 +1016,7 @@ pub(crate) fn try_handle_dnsm(
                         data.len()
                     );
                 }
+                finish_assembly(sess, total_assembly_chunks, total_assembly_bytes);
                 return;
             }
 
@@ -958,7 +1062,7 @@ pub(crate) fn try_handle_dnsm(
                     assembled.len()
                 ),
             );
-            sess.completed = true;
+            finish_assembly(sess, total_assembly_chunks, total_assembly_bytes);
             let _ = log.flush();
             if insert_ok && cfg.pretty_stdout {
                 let mbox_tag = match sess.mailbox {
@@ -1091,6 +1195,8 @@ pub(crate) fn summarize_missing(
 
 pub(crate) fn gc_assemblies(
     assemblies: &mut HashMap<u64, crate::Assembly>,
+    total_assembly_chunks: &mut usize,
+    total_assembly_bytes: &mut usize,
     now: u128,
     max_age_ms: u128,
     log: &mut BufWriter<std::fs::File>,
@@ -1107,10 +1213,16 @@ pub(crate) fn gc_assemblies(
         })
         .collect();
     for sid in to_remove {
-        if let Some(sess) = assemblies.remove(&sid) {
-            let miss = match sess.rmax {
-                Some(rm) => (rm as u32 + 1).saturating_sub(sess.have_r.len() as u32),
-                None => 0,
+        if let Some(sess) =
+            remove_assembly(assemblies, total_assembly_chunks, total_assembly_bytes, sid)
+        {
+            let miss = if sess.completed {
+                0
+            } else {
+                match sess.rmax {
+                    Some(rm) => (rm as u32 + 1).saturating_sub(sess.have_r.len() as u32),
+                    None => 0,
+                }
             };
             let _ = writeln!(
                 log,
@@ -1143,6 +1255,71 @@ pub(crate) fn gc_assemblies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_cfg() -> crate::ServerCfg {
+        crate::ServerCfg {
+            zone_labels: None,
+            mailbox_zone_labels: None,
+            ans_ttl: 0,
+            neg_ttl: 0,
+            pretty_stdout: false,
+            accept_ascii_only: false,
+            no_response: false,
+            max_decompressed_bytes: 1024 * 1024,
+            rate_limit_qps: None,
+            max_assemblies: 10,
+            max_assembly_chunks: 4,
+            max_total_assembly_chunks: 6,
+            max_assembly_bytes: 100,
+            max_total_assembly_bytes: 150,
+        }
+    }
+
+    #[test]
+    fn decompression_accepts_standard_lzma_and_enforces_output_limit() {
+        use lzma_rust2::{LzmaOptions, LzmaWriter};
+
+        let payload = vec![b'a'; 4096];
+        let mut writer = LzmaWriter::new_use_header(
+            Vec::new(),
+            &LzmaOptions::default(),
+            Some(payload.len() as u64),
+        )
+        .unwrap();
+        writer.write_all(&payload).unwrap();
+        let compressed = writer.finish().unwrap();
+
+        assert_eq!(decompress_lzma_mem(&compressed, 8192).unwrap(), payload);
+        assert!(decompress_lzma_mem(&compressed, 1024).is_err());
+    }
+
+    #[test]
+    fn chunk_limits_bound_per_assembly_and_global_storage() {
+        let cfg = test_cfg();
+        assert!(chunk_fits_limits(50, 2, 75, 3, 25, &cfg));
+        assert!(!chunk_fits_limits(50, 4, 75, 3, 1, &cfg));
+        assert!(!chunk_fits_limits(50, 2, 75, 6, 1, &cfg));
+        assert!(!chunk_fits_limits(90, 2, 90, 3, 11, &cfg));
+        assert!(!chunk_fits_limits(50, 2, 140, 3, 11, &cfg));
+    }
+
+    #[test]
+    fn releasing_an_assembly_updates_global_storage_accounting() {
+        let mut assembly = crate::Assembly::new(0);
+        assembly.chunks.insert(0, vec![1; 25]);
+        assembly.have_r.insert(0);
+        assembly.stored_bytes = 25;
+        let mut total_chunks = 1;
+        let mut total_bytes = 25;
+
+        release_assembly_storage(&mut assembly, &mut total_chunks, &mut total_bytes);
+
+        assert_eq!(total_chunks, 0);
+        assert_eq!(total_bytes, 0);
+        assert_eq!(assembly.stored_bytes, 0);
+        assert!(assembly.chunks.is_empty());
+        assert!(assembly.have_r.is_empty());
+    }
 
     #[test]
     fn format_ts_utc_known_values() {
