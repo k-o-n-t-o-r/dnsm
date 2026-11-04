@@ -35,7 +35,7 @@ services:
       "--bind", "0.0.0.0:8787",
       "--db", "/var/lib/dnsm/dnsm.sqlite",
       "--poll-ms", "1000",
-      "--allow-all-origins"
+      "--allowed-origin", "https://dnsm.re"
     ]
     depends_on:
       - dnsm-server

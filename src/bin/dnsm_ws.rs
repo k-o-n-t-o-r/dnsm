@@ -15,7 +15,16 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio_stream::wrappers::IntervalStream;
 use warp::ws::{self, Message};
-use warp::{Filter, Rejection, Reply, http::StatusCode};
+use warp::{
+    Filter, Rejection, Reply,
+    http::{
+        StatusCode, Uri,
+        header::{
+            CACHE_CONTROL, CONTENT_SECURITY_POLICY, HeaderValue, REFERRER_POLICY,
+            X_CONTENT_TYPE_OPTIONS,
+        },
+    },
+};
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -44,9 +53,17 @@ struct Args {
     #[arg(long = "max-ws-connections-per-ip", default_value_t = 8)]
     max_ws_connections_per_ip: u32,
 
+    /// Origin allowed to read the HTTP API and open browser WebSockets. Repeatable.
+    #[arg(long = "allowed-origin", value_name = "ORIGIN")]
+    allowed_origins: Vec<String>,
+
     /// Allow cross-origin requests from any origin
     #[arg(long = "allow-all-origins")]
     allow_all_origins: bool,
+
+    /// Include sender IP addresses in mailbox API responses
+    #[arg(long = "expose-peer-ip")]
+    expose_peer_ip: bool,
 }
 
 #[derive(Clone)]
@@ -55,6 +72,9 @@ struct AppState {
     poll_every: Duration,
     shutdown: Arc<Notify>,
     traffic: Arc<Mutex<TrafficLimiter>>,
+    allowed_origins: Arc<HashSet<String>>,
+    allow_all_origins: bool,
+    expose_peer_ip: bool,
 }
 
 struct TrafficEntry {
@@ -177,16 +197,63 @@ struct WsQuery {
     after_id: Option<i64>,
 }
 
-fn rate_limited_response() -> warp::reply::Response {
-    warp::reply::with_header(
+fn secure_response(mut response: warp::reply::Response) -> warp::reply::Response {
+    let headers = response.headers_mut();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    headers.insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; base-uri 'none'"),
+    );
+    response
+}
+
+fn error_response(error: &str, status: StatusCode) -> warp::reply::Response {
+    secure_response(
         warp::reply::with_status(
-            warp::reply::json(&serde_json::json!({"error": "rate_limited"})),
-            StatusCode::TOO_MANY_REQUESTS,
-        ),
-        "retry-after",
-        "60",
+            warp::reply::json(&serde_json::json!({"error": error})),
+            status,
+        )
+        .into_response(),
     )
-    .into_response()
+}
+
+fn rate_limited_response() -> warp::reply::Response {
+    let mut response = error_response("rate_limited", StatusCode::TOO_MANY_REQUESTS);
+    response
+        .headers_mut()
+        .insert("retry-after", HeaderValue::from_static("60"));
+    response
+}
+
+fn canonical_origin(value: &str) -> Result<String, String> {
+    let uri: Uri = value
+        .parse()
+        .map_err(|_| format!("invalid origin: {value}"))?;
+    let scheme = uri
+        .scheme_str()
+        .filter(|scheme| matches!(*scheme, "http" | "https"))
+        .ok_or_else(|| format!("origin must use http or https: {value}"))?;
+    let authority = uri
+        .authority()
+        .ok_or_else(|| format!("origin has no host: {value}"))?;
+    if uri.path() != "/" || uri.query().is_some() {
+        return Err(format!("origin must not contain a path or query: {value}"));
+    }
+    Ok(format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        authority.as_str().to_ascii_lowercase()
+    ))
+}
+
+fn origin_allowed(state: &AppState, origin: Option<&str>) -> bool {
+    origin.is_none_or(|origin| {
+        state.allow_all_origins
+            || canonical_origin(origin)
+                .is_ok_and(|canonical| state.allowed_origins.contains(&canonical))
+    })
 }
 
 fn request_allowed(state: &AppState, remote: Option<SocketAddr>) -> bool {
@@ -238,8 +305,18 @@ fn has_message_type_column(db: &Connection) -> bool {
         .unwrap_or(false)
 }
 
-fn fetch_all_messages(db: &Connection, mailbox_hex: &str) -> rusqlite::Result<HistoryPage> {
-    fetch_all_messages_with_limits(db, mailbox_hex, MAX_HISTORY_MESSAGES, MAX_HISTORY_BYTES)
+fn fetch_all_messages(
+    db: &Connection,
+    mailbox_hex: &str,
+    expose_peer_ip: bool,
+) -> rusqlite::Result<HistoryPage> {
+    fetch_all_messages_with_limits(
+        db,
+        mailbox_hex,
+        MAX_HISTORY_MESSAGES,
+        MAX_HISTORY_BYTES,
+        expose_peer_ip,
+    )
 }
 
 fn fetch_all_messages_with_limits(
@@ -247,6 +324,7 @@ fn fetch_all_messages_with_limits(
     mailbox_hex: &str,
     max_messages: usize,
     max_bytes: usize,
+    expose_peer_ip: bool,
 ) -> rusqlite::Result<HistoryPage> {
     let has_mt = has_message_type_column(db);
     let sql = if has_mt {
@@ -302,7 +380,7 @@ fn fetch_all_messages_with_limits(
             mailbox,
             data_b64: base64::engine::general_purpose::STANDARD.encode(&data),
             received_at,
-            peer_ip,
+            peer_ip: expose_peer_ip.then_some(peer_ip).flatten(),
             message_type: message_type.unwrap_or_else(|| "message".to_string()),
         });
     }
@@ -319,6 +397,7 @@ fn fetch_new_messages_after(
     db: &Connection,
     mailbox_hex: &str,
     after_id: i64,
+    expose_peer_ip: bool,
 ) -> rusqlite::Result<Vec<ApiMessage>> {
     fetch_new_messages_after_with_limits(
         db,
@@ -326,6 +405,7 @@ fn fetch_new_messages_after(
         after_id,
         MAX_LIVE_BATCH_MESSAGES,
         MAX_LIVE_BATCH_BYTES,
+        expose_peer_ip,
     )
 }
 
@@ -335,6 +415,7 @@ fn fetch_new_messages_after_with_limits(
     after_id: i64,
     max_messages: usize,
     max_bytes: usize,
+    expose_peer_ip: bool,
 ) -> rusqlite::Result<Vec<ApiMessage>> {
     let has_mt = has_message_type_column(db);
     let sql = if has_mt {
@@ -361,7 +442,7 @@ fn fetch_new_messages_after_with_limits(
             mailbox,
             data_b64: base64::engine::general_purpose::STANDARD.encode(&data),
             received_at,
-            peer_ip,
+            peer_ip: expose_peer_ip.then_some(peer_ip).flatten(),
             message_type: message_type.unwrap_or_else(|| "message".to_string()),
         })
     })?;
@@ -405,34 +486,27 @@ async fn handle_list_messages(
         return Ok(rate_limited_response());
     }
     let response = if let Some(mb) = validate_mailbox_hex12(&mailbox) {
-        match open_readonly_db(&*state.db_path).and_then(|db| fetch_all_messages(&db, &mb)) {
-            Ok(page) => warp::reply::with_status(
-                warp::reply::with_header(
-                    warp::reply::json(&page.messages),
-                    "x-dnsm-history-truncated",
-                    if page.truncated { "true" } else { "false" },
-                ),
-                StatusCode::OK,
-            )
-            .into_response(),
-            Err(e) => warp::reply::with_status(
-                warp::reply::json(&serde_json::json!({
-                    "error": "db_query_failed",
-                    "reason": e.to_string(),
-                })),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            )
-            .into_response(),
+        match open_readonly_db(&*state.db_path)
+            .and_then(|db| fetch_all_messages(&db, &mb, state.expose_peer_ip))
+        {
+            Ok(page) => secure_response(
+                warp::reply::with_status(
+                    warp::reply::with_header(
+                        warp::reply::json(&page.messages),
+                        "x-dnsm-history-truncated",
+                        if page.truncated { "true" } else { "false" },
+                    ),
+                    StatusCode::OK,
+                )
+                .into_response(),
+            ),
+            Err(e) => {
+                eprintln!("mailbox history query failed: {e}");
+                error_response("db_query_failed", StatusCode::INTERNAL_SERVER_ERROR)
+            }
         }
     } else {
-        warp::reply::with_status(
-            warp::reply::json(&serde_json::json!({
-                "error": "invalid_mailbox",
-                "hint": "expected 12 lowercase hex chars",
-            })),
-            StatusCode::BAD_REQUEST,
-        )
-        .into_response()
+        error_response("invalid_mailbox", StatusCode::BAD_REQUEST)
     };
     Ok(response)
 }
@@ -441,9 +515,13 @@ async fn handle_ws(
     state: AppState,
     mailbox: String,
     query: WsQuery,
+    origin: Option<String>,
     remote: Option<SocketAddr>,
     ws: ws::Ws,
 ) -> Result<warp::reply::Response, Rejection> {
+    if !origin_allowed(&state, origin.as_deref()) {
+        return Ok(error_response("origin_not_allowed", StatusCode::FORBIDDEN));
+    }
     let permit = match acquire_websocket_permit(&state, remote) {
         Ok(permit) => permit,
         Err(()) => return Ok(rate_limited_response()),
@@ -452,13 +530,9 @@ async fn handle_ws(
         let resp = ws
             .on_upgrade(move |socket| ws_session(state, mb, query.after_id, permit, socket))
             .into_response();
-        Ok(resp)
+        Ok(secure_response(resp))
     } else {
-        let body = warp::reply::json(&serde_json::json!({
-            "error": "invalid_mailbox",
-            "hint": "expected 12 lowercase hex chars",
-        }));
-        Ok(warp::reply::with_status(body, StatusCode::BAD_REQUEST).into_response())
+        Ok(error_response("invalid_mailbox", StatusCode::BAD_REQUEST))
     }
 }
 
@@ -475,10 +549,10 @@ async fn ws_session(
     let db = match open_readonly_db(&*state.db_path) {
         Ok(c) => c,
         Err(e) => {
+            eprintln!("websocket database open failed: {e}");
             let _ = ws_tx
                 .send(Message::text(
-                    serde_json::json!({"error":"db_open_failed", "reason": e.to_string()})
-                        .to_string(),
+                    serde_json::json!({"error":"db_open_failed"}).to_string(),
                 ))
                 .await;
             return;
@@ -490,10 +564,10 @@ async fn ws_session(
     let mut last_id = match initial_last_id(&db, &mailbox_hex, requested_after_id) {
         Ok(v) => v,
         Err(e) => {
+            eprintln!("websocket cursor query failed: {e}");
             let _ = ws_tx
                 .send(Message::text(
-                    serde_json::json!({"error":"db_query_failed", "reason": e.to_string()})
-                        .to_string(),
+                    serde_json::json!({"error":"db_query_failed"}).to_string(),
                 ))
                 .await;
             return;
@@ -507,7 +581,12 @@ async fn ws_session(
     loop {
         tokio::select! {
             _ = ticker.next() => {
-                match fetch_new_messages_after(&db, &mailbox_hex, last_id) {
+                match fetch_new_messages_after(
+                    &db,
+                    &mailbox_hex,
+                    last_id,
+                    state.expose_peer_ip,
+                ) {
                     Ok(new_msgs) => {
                         if !new_msgs.is_empty() {
                             last_id = new_msgs.last().unwrap().id;
@@ -524,9 +603,10 @@ async fn ws_session(
                         }
                     }
                     Err(e) => {
+                        eprintln!("websocket poll query failed: {e}");
                         let _ = ws_tx
                             .send(Message::text(
-                                serde_json::json!({"error":"db_query_failed", "reason": e.to_string()}).to_string(),
+                                serde_json::json!({"error":"db_query_failed"}).to_string(),
                             ))
                             .await;
                     }
@@ -562,8 +642,18 @@ async fn main() {
         poll_ms,
         requests_per_minute,
         max_ws_connections_per_ip,
+        allowed_origins,
         allow_all_origins,
+        expose_peer_ip,
     } = Args::parse();
+    let allowed_origins: HashSet<String> = allowed_origins
+        .iter()
+        .map(|origin| canonical_origin(origin))
+        .collect::<Result<_, _>>()
+        .unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(2);
+        });
     let state = AppState {
         db_path: Arc::new(db_path),
         poll_every: Duration::from_millis(poll_ms),
@@ -572,10 +662,15 @@ async fn main() {
             requests_per_minute,
             max_ws_connections_per_ip,
         ))),
+        allowed_origins: Arc::new(allowed_origins),
+        allow_all_origins,
+        expose_peer_ip,
     };
 
     // Basic health endpoint
-    let health = warp::path("healthz").and(warp::path::end()).map(|| "ok");
+    let health = warp::path("healthz")
+        .and(warp::path::end())
+        .map(|| secure_response("ok".into_response()));
 
     // GET /api/mailbox/{mailbox}/messages
     let api_state = state.clone();
@@ -591,12 +686,17 @@ async fn main() {
     let ws_state = state.clone();
     let ws_route = warp::path!("ws" / String)
         .and(warp::query::<WsQuery>())
+        .and(warp::header::optional::<String>("origin"))
         .and(warp::addr::remote())
         .and(warp::ws())
         .and_then(
-            move |mailbox: String, query: WsQuery, remote: Option<SocketAddr>, ws: ws::Ws| {
+            move |mailbox: String,
+                  query: WsQuery,
+                  origin: Option<String>,
+                  remote: Option<SocketAddr>,
+                  ws: ws::Ws| {
                 let st = ws_state.clone();
-                async move { handle_ws(st, mailbox, query, remote, ws).await }
+                async move { handle_ws(st, mailbox, query, origin, remote, ws).await }
             },
         );
 
@@ -608,8 +708,11 @@ async fn main() {
             .expose_headers(["x-dnsm-history-truncated"])
             .allow_methods(["GET"])
     } else {
-        // Default: allow same-origin (handled by browsers) - no explicit CORS
         warp::cors()
+            .allow_origins(state.allowed_origins.iter().map(String::as_str))
+            .allow_headers(["content-type"])
+            .expose_headers(["x-dnsm-history-truncated"])
+            .allow_methods(["GET"])
     };
 
     let routes = health.or(list_route).or(ws_route).with(cors);
@@ -628,6 +731,23 @@ mod tests {
     use super::*;
     use rusqlite::{Connection, params};
 
+    fn test_state(allowed_origins: &[&str]) -> AppState {
+        AppState {
+            db_path: Arc::new(PathBuf::new()),
+            poll_every: Duration::from_secs(1),
+            shutdown: Arc::new(Notify::new()),
+            traffic: Arc::new(Mutex::new(TrafficLimiter::new(0, 0))),
+            allowed_origins: Arc::new(
+                allowed_origins
+                    .iter()
+                    .map(|origin| origin.to_string())
+                    .collect(),
+            ),
+            allow_all_origins: false,
+            expose_peer_ip: false,
+        }
+    }
+
     fn init_db() -> Connection {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch(
@@ -644,6 +764,21 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    #[test]
+    fn origins_are_canonicalized_and_paths_are_rejected() {
+        assert_eq!(
+            canonical_origin("https://dnsm.re/").unwrap(),
+            "https://dnsm.re"
+        );
+        assert!(canonical_origin("https://dnsm.re/path").is_err());
+        assert!(canonical_origin("file:///tmp/test").is_err());
+
+        let state = test_state(&["https://dnsm.re"]);
+        assert!(origin_allowed(&state, None));
+        assert!(origin_allowed(&state, Some("https://DNSM.RE")));
+        assert!(!origin_allowed(&state, Some("https://evil.example")));
     }
 
     #[test]
@@ -707,7 +842,7 @@ mod tests {
         )
         .unwrap();
 
-        let page = fetch_all_messages(&db, mb).expect("ok");
+        let page = fetch_all_messages(&db, mb, false).expect("ok");
         assert!(!page.truncated);
         assert!(page.messages.len() >= 2);
         // Newest-first distinct: hello (key=2) first, then world (key=1)
@@ -724,6 +859,22 @@ mod tests {
     }
 
     #[test]
+    fn peer_ip_is_hidden_unless_enabled() {
+        let db = init_db();
+        let mb = "000000000042";
+        db.execute(
+            "INSERT INTO messages (message_key, mailbox, data, received_at, peer_ip) VALUES (1, ?1, X'01', 1, '198.51.100.7')",
+            [mb],
+        )
+        .unwrap();
+
+        let hidden = fetch_all_messages(&db, mb, false).unwrap();
+        assert_eq!(hidden.messages[0].peer_ip, None);
+        let visible = fetch_all_messages(&db, mb, true).unwrap();
+        assert_eq!(visible.messages[0].peer_ip.as_deref(), Some("198.51.100.7"));
+    }
+
+    #[test]
     fn fetch_all_stops_at_byte_budget() {
         let db = init_db();
         let mb = "000000000042";
@@ -735,7 +886,7 @@ mod tests {
             .unwrap();
         }
 
-        let page = fetch_all_messages_with_limits(&db, mb, 10, b"older".len()).unwrap();
+        let page = fetch_all_messages_with_limits(&db, mb, 10, b"older".len(), false).unwrap();
         assert_eq!(page.messages.len(), 1);
         assert!(page.truncated);
     }
@@ -752,9 +903,10 @@ mod tests {
             .unwrap();
         }
 
-        let first = fetch_new_messages_after_with_limits(&db, mb, 0, 10, 3).unwrap();
+        let first = fetch_new_messages_after_with_limits(&db, mb, 0, 10, 3, false).unwrap();
         assert_eq!(first.len(), 1);
-        let second = fetch_new_messages_after_with_limits(&db, mb, first[0].id, 10, 3).unwrap();
+        let second =
+            fetch_new_messages_after_with_limits(&db, mb, first[0].id, 10, 3, false).unwrap();
         assert_eq!(second.len(), 1);
         assert!(second[0].id > first[0].id);
     }
@@ -776,7 +928,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(initial_last_id(&db, mb, Some(backlog_cursor)).unwrap(), 1);
-        let live = fetch_new_messages_after(&db, mb, backlog_cursor).unwrap();
+        let live = fetch_new_messages_after(&db, mb, backlog_cursor, false).unwrap();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].id, 2);
     }
