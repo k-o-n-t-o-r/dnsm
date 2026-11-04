@@ -248,14 +248,33 @@ const methodLoaders: Record<string, (domain: string) => Promise<void>> = {
   "speculation-prefetch": viaSpeculationPrefetch,
 }
 
-function runDomains(domains: string[], loader: (d: string) => Promise<void>): Promise<void> {
-  let inflight = 0, idx = 0
+function waitFor(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
+    if (signal.aborted) { resolve(); return }
+    const timer = setTimeout(resolve, ms)
+    signal.addEventListener("abort", () => { clearTimeout(timer); resolve() }, { once: true })
+  })
+}
+
+function runDomains(
+  domains: string[],
+  loader: (d: string) => Promise<void>,
+  signal: AbortSignal,
+): Promise<void> {
+  let inflight = 0, idx = 0, settled = false
+  return new Promise((resolve) => {
+    const finish = () => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+    signal.addEventListener("abort", finish, { once: true })
     function step() {
-      if (idx >= domains.length && inflight === 0) { resolve(); return }
-      while (inflight < MAX_INFLIGHT && idx < domains.length) {
+      if (signal.aborted) { finish(); return }
+      if (idx >= domains.length && inflight === 0) { finish(); return }
+      while (inflight < MAX_INFLIGHT && idx < domains.length && !signal.aborted) {
         const d = domains[idx++]; inflight++
-        Promise.race([loader(d), new Promise<void>((r) => setTimeout(r, LOADER_TIMEOUT_MS))])
+        Promise.race([loader(d), waitFor(LOADER_TIMEOUT_MS, signal)])
           .finally(() => { inflight--; step() })
       }
     }
@@ -277,13 +296,33 @@ export function BrowserTest() {
   )
 
   const wsRef = useRef<WebSocket | null>(null)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconnectDelayRef = useRef(1000)
+  const wsGenerationRef = useRef(0)
+  const connectWsRef = useRef<(mb: string) => Promise<void>>(null!)
+  const runAbortRef = useRef<AbortController | null>(null)
+  const unmountedRef = useRef(false)
   const sessionRef = useRef(Math.random().toString(36).slice(2, 10))
+
+  const scheduleReconnect = useCallback((mb: string) => {
+    if (unmountedRef.current) return
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+    const delay = reconnectDelayRef.current
+    setStatus({ text: `Reconnecting in ${Math.round(delay / 1000)}s...`, level: "warn" })
+    reconnectTimerRef.current = setTimeout(() => connectWsRef.current(mb), delay)
+    reconnectDelayRef.current = Math.min(delay * 2, 20000)
+  }, [])
 
   const connectWs = useCallback(async (mb: string) => {
     const validated = validateMailbox(mb)
     if (!validated) { setStatus({ text: "Mailbox must be 12 lowercase hex chars", level: "bad" }); return }
+    const generation = ++wsGenerationRef.current
     setStatus({ text: "Connecting...", level: "warn" })
     setIsConnected(false)
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
 
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
       try { wsRef.current.close() } catch { /* */ }
@@ -296,10 +335,25 @@ export function BrowserTest() {
     try {
       const ws = new WebSocket(`${wsBase}/ws/${validated}`)
       wsRef.current = ws
-      ws.addEventListener("open", () => { setStatus({ text: "Connected to WebSocket server", level: "good" }); setIsConnected(true) })
-      ws.addEventListener("close", () => { setStatus({ text: "Disconnected", level: "warn" }); setIsConnected(false) })
-      ws.addEventListener("error", () => { setStatus({ text: "WebSocket error", level: "bad" }); setIsConnected(false) })
+      ws.addEventListener("open", () => {
+        if (generation !== wsGenerationRef.current) { ws.close(); return }
+        reconnectDelayRef.current = 1000
+        setStatus({ text: "Connected to WebSocket server", level: "good" })
+        setIsConnected(true)
+      })
+      ws.addEventListener("close", () => {
+        if (generation !== wsGenerationRef.current || unmountedRef.current) return
+        setStatus({ text: "Disconnected", level: "warn" })
+        setIsConnected(false)
+        scheduleReconnect(validated)
+      })
+      ws.addEventListener("error", () => {
+        if (generation !== wsGenerationRef.current) return
+        setStatus({ text: "WebSocket error", level: "bad" })
+        setIsConnected(false)
+      })
       ws.addEventListener("message", (ev) => {
+        if (generation !== wsGenerationRef.current) return
         try {
           const m = JSON.parse(ev.data)
           const text = atob(m.data_b64)
@@ -317,11 +371,16 @@ export function BrowserTest() {
         } catch { /* ignore */ }
       })
     } catch (e) {
+      if (generation !== wsGenerationRef.current) return
       setStatus({ text: `WS init failed: ${e}`, level: "bad" })
+      scheduleReconnect(validated)
     }
-  }, [host])
+  }, [host, scheduleReconnect])
+
+  connectWsRef.current = connectWs
 
   useEffect(() => {
+    unmountedRef.current = false
     const mb = randomMailbox()
     setMailbox(mb)
 
@@ -333,6 +392,11 @@ export function BrowserTest() {
     connectWs(mb)
 
     return () => {
+      unmountedRef.current = true
+      wsGenerationRef.current++
+      runAbortRef.current?.abort()
+      runAbortRef.current = null
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       if (wsRef.current) try { wsRef.current.close() } catch { /* */ }
     }
 
@@ -341,6 +405,9 @@ export function BrowserTest() {
   async function startTest() {
     if (!wasmModule) { setStatus({ text: "Wasm module not loaded", level: "bad" }); return }
 
+    runAbortRef.current?.abort()
+    const controller = new AbortController()
+    runAbortRef.current = controller
     sessionRef.current = Math.random().toString(36).slice(2, 10)
     setMethodState(Object.fromEntries(METHODS.map((m) => [m, { sent: false, recv: false, rid: null }])))
     setTestCompleted(false)
@@ -351,6 +418,7 @@ export function BrowserTest() {
 
     try {
       for (const method of METHODS) {
+        if (controller.signal.aborted) break
         const rid = Math.random().toString(36).slice(2, 10)
         const parts = [`sid=${sessionRef.current}`, `m=${method}`, `t=${Date.now().toString(36)}`, `r=${rid}`, `ua=${userAgent}`]
         const testMessage = parts.map((p) => `${p};\n`).join("")
@@ -359,16 +427,28 @@ export function BrowserTest() {
         setMethodState((prev) => ({ ...prev, [method]: { sent: true, recv: prev[method]?.recv || false, rid } }))
 
         const loader = methodLoaders[method]
-        if (loader) await runDomains(domains, loader)
-        await new Promise((r) => setTimeout(r, METHOD_DELAY_MS))
+        if (loader) await runDomains(domains, loader, controller.signal)
+        await waitFor(METHOD_DELAY_MS, controller.signal)
       }
-      setStatus({ text: "Sent all - waiting for receipts", level: "warn" })
-      setTestCompleted(true)
+      if (!controller.signal.aborted) {
+        setStatus({ text: "Sent all - waiting for receipts", level: "warn" })
+        setTestCompleted(true)
+      }
     } catch (e) {
-      setStatus({ text: `Test error: ${e}`, level: "bad" })
+      if (!controller.signal.aborted) setStatus({ text: `Test error: ${e}`, level: "bad" })
     } finally {
-      setIsRunning(false)
+      if (runAbortRef.current === controller) {
+        runAbortRef.current = null
+        setIsRunning(false)
+      }
     }
+  }
+
+  function cancelTest() {
+    runAbortRef.current?.abort()
+    runAbortRef.current = null
+    setIsRunning(false)
+    setStatus({ text: "Test cancelled", level: "idle" })
   }
 
   async function copyText(content: string) {
@@ -410,6 +490,9 @@ export function BrowserTest() {
           <Button onClick={startTest} disabled={!isConnected || isRunning} className="min-w-[180px]">
             Start Test
           </Button>
+          {isRunning && (
+            <Button variant="outline" onClick={cancelTest}>Cancel</Button>
+          )}
           {testCompleted && (
             <Link to={`/inbox?mailbox=${mailbox}&host=${host}&auto=true`}>
               <Button variant="outline">View Messages in Inbox &rarr;</Button>

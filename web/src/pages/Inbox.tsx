@@ -4,7 +4,7 @@ import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Collapsible } from "@/components/ui/collapsible"
-import { Copy, ChevronDown, Shuffle, Trash2 } from "lucide-react"
+import { ArrowDown, Copy, ChevronDown, Shuffle, Trash2 } from "lucide-react"
 import { validateMailbox, randomMailbox } from "@/lib/utils"
 
 interface DecodedPayload {
@@ -148,6 +148,7 @@ export function Inbox() {
   const [genMessage, setGenMessage] = useState("")
   const [genDomains, setGenDomains] = useState<string[]>([])
   const [genError, setGenError] = useState("")
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -156,6 +157,7 @@ export function Inbox() {
   const abortRef = useRef<AbortController | null>(null)
   const activeMailboxRef = useRef("")
   const activeHostRef = useRef("")
+  const autoScrollRef = useRef(true)
 
   const parentZone = zone.split(".").slice(1).join(".") || zone
   const mailboxZone = `m.${parentZone}`
@@ -315,9 +317,36 @@ export function Inbox() {
 
   connectRef.current = connect
 
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = "smooth") => {
+    autoScrollRef.current = true
+    setShowJumpToLatest(false)
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior })
+  }, [])
+
   useEffect(() => {
-    window.scrollTo({ top: document.documentElement.scrollHeight })
-  }, [messages])
+    const updateAutoScroll = () => {
+      const distance = document.documentElement.scrollHeight - (window.scrollY + window.innerHeight)
+      const atBottom = distance < 160
+      autoScrollRef.current = atBottom
+      if (atBottom) setShowJumpToLatest(false)
+    }
+    updateAutoScroll()
+    window.addEventListener("scroll", updateAutoScroll, { passive: true })
+    window.addEventListener("resize", updateAutoScroll)
+    return () => {
+      window.removeEventListener("scroll", updateAutoScroll)
+      window.removeEventListener("resize", updateAutoScroll)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!autoScrollRef.current) {
+      if (messages.length > 0) setShowJumpToLatest(true)
+      return
+    }
+    const frame = requestAnimationFrame(() => scrollToLatest("auto"))
+    return () => cancelAnimationFrame(frame)
+  }, [messages, scrollToLatest])
 
   useEffect(() => {
     import("@/lib/pkg-web/dnsm.js").then(async (mod) => {
@@ -459,14 +488,21 @@ export function Inbox() {
         <span className="text-sm text-muted-foreground">
           {messages.length} message{messages.length === 1 ? "" : "s"}
         </span>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setMessages([])}
-          disabled={messages.length === 0}
-        >
-          <Trash2 className="h-3 w-3" /> Clear
-        </Button>
+        <div className="flex items-center gap-2">
+          {showJumpToLatest && (
+            <Button variant="outline" size="sm" onClick={() => scrollToLatest()}>
+              <ArrowDown className="h-3 w-3" /> Latest
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => { setMessages([]); setShowJumpToLatest(false) }}
+            disabled={messages.length === 0}
+          >
+            <Trash2 className="h-3 w-3" /> Clear
+          </Button>
+        </div>
       </div>
 
       <div className="space-y-3">
