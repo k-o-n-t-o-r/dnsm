@@ -255,6 +255,14 @@ pub fn validate_mailbox_hex12(s: &str) -> Option<String> {
     Some(t.to_ascii_lowercase())
 }
 
+pub fn parse_mailbox_u64(s: &str) -> Result<u64, &'static str> {
+    let t = s.trim();
+    if t.len() != 12 || !t.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("mailbox must be exactly 12 hex chars");
+    }
+    u64::from_str_radix(t, 16).map_err(|_| "bad hex")
+}
+
 pub fn parse_hex_bytes_exact(label: &str, byte_len: usize) -> Option<Vec<u8>> {
     let s = label.trim();
     if s.len() != byte_len * 2 {
@@ -355,6 +363,12 @@ pub fn build_domains_for_payload(payload: &[u8], zone: &str) -> Result<Vec<Strin
     } else {
         1 + (payload.len() - first_payload_len).div_ceil(base_payload_len)
     };
+    if total_chunks > 65536 {
+        return Err(format!(
+            "payload too large: needs {} chunks, max 65536",
+            total_chunks
+        ));
+    }
     let rmax = if total_chunks == 0 {
         0
     } else {
@@ -436,6 +450,12 @@ pub fn build_domains_for_data(
     } else {
         1 + (compressed.len() - first_payload_len).div_ceil(payload_len)
     };
+    if total_chunks > 65536 {
+        return Err(format!(
+            "payload too large: needs {} chunks, max 65536",
+            total_chunks
+        ));
+    }
     let rmax: u16 = if total_chunks == 0 {
         0
     } else {
@@ -544,7 +564,10 @@ pub fn build_human_ping_domain(mailbox_hex: &str, zone: &str) -> Result<String, 
 // ---------------- wasm-bindgen JS API ----------------
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {
-    use super::{BuildOptions, build_domains_for_data, build_human_ping_domain, build_ping_domain};
+    use super::{
+        BuildOptions, build_domains_for_data, build_human_ping_domain, build_ping_domain,
+        parse_mailbox_u64,
+    };
     use js_sys::Array;
     use wasm_bindgen::prelude::*;
 
@@ -564,14 +587,7 @@ mod wasm_api {
     /// Returns a single ping domain for the given mailbox (exactly 12 hex chars, no 0x).
     #[wasm_bindgen]
     pub fn ping_domain(mailbox_str: &str, zone: &str) -> String {
-        fn parse_hex12(v: &str) -> Result<u64, String> {
-            let s = v.trim();
-            if s.len() != 12 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err("mailbox must be exactly 12 hex chars".to_string());
-            }
-            u64::from_str_radix(s, 16).map_err(|_| "bad hex".to_string())
-        }
-        let mailbox = parse_hex12(mailbox_str).unwrap_or_else(|e| wasm_bindgen::throw_str(&e));
+        let mailbox = parse_mailbox_u64(mailbox_str).unwrap_or_else(|e| wasm_bindgen::throw_str(e));
         match build_ping_domain(mailbox, zone) {
             Ok(d) => d,
             Err(e) => wasm_bindgen::throw_str(&e),
@@ -590,17 +606,10 @@ mod wasm_api {
     /// Returns domains for input string with mailbox (exactly 12 hex chars, no 0x).
     #[wasm_bindgen]
     pub fn domains_for_string_with_mailbox(input: &str, zone: &str, mailbox_str: &str) -> Array {
-        fn parse_hex12(v: &str) -> Result<u64, String> {
-            let s = v.trim();
-            if s.len() != 12 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err("mailbox must be exactly 12 hex chars".to_string());
-            }
-            u64::from_str_radix(s, 16).map_err(|_| "bad hex".to_string())
-        }
         let mailbox = if mailbox_str.trim().is_empty() {
             None
         } else {
-            Some(parse_hex12(mailbox_str).unwrap_or_else(|e| wasm_bindgen::throw_str(&e)))
+            Some(parse_mailbox_u64(mailbox_str).unwrap_or_else(|e| wasm_bindgen::throw_str(e)))
         };
         let opts = BuildOptions { mailbox };
         match build_domains_for_data(input.as_bytes(), zone, &opts) {
@@ -624,13 +633,7 @@ mod pyo3_api {
     use pyo3::types::PyBytes;
 
     fn parse_hex12(v: &str) -> PyResult<u64> {
-        let s = v.trim();
-        if s.len() != 12 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "mailbox must be exactly 12 hex chars",
-            ));
-        }
-        u64::from_str_radix(s, 16).map_err(|_| pyo3::exceptions::PyValueError::new_err("bad hex"))
+        parse_mailbox_u64(v).map_err(pyo3::exceptions::PyValueError::new_err)
     }
 
     #[pyclass(name = "BuildInfo", frozen)]

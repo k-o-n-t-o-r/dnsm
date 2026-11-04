@@ -30,12 +30,6 @@ RUN setcap 'cap_net_bind_service=+ep' /usr/local/bin/dnsm-server || true
 USER dnsm:dnsm
 WORKDIR /app
 
-ENV DNSM_BIND=0.0.0.0:53 \
-    DNSM_ZONE=x.example \
-    DNSM_FIXED_IP=127.0.0.1 \
-    DNSM_LOG=/var/log/dnsm/queries.log \
-    DNSM_DB=/var/lib/dnsm/dnsm.sqlite
-
 EXPOSE 53/udp 53/tcp
 
 # Use an entrypoint and let the user pass flags/ZONE via docker run or compose

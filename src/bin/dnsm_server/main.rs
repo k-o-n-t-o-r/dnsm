@@ -21,8 +21,6 @@ mod storage;
 pub(crate) struct ServerCfg {
     zone_labels: Option<Vec<String>>,
     mailbox_zone_labels: Option<Vec<String>>,
-    #[allow(dead_code)]
-    progress_every: Option<u32>,
     ans_ttl: u32,
     neg_ttl: u32,
     pretty_stdout: bool,
@@ -31,12 +29,22 @@ pub(crate) struct ServerCfg {
     max_decompressed_bytes: u32,
     rate_limit_qps: Option<u32>,
     max_assemblies: usize,
+    max_assembly_chunks: usize,
+    max_total_assembly_chunks: usize,
+    max_assembly_bytes: usize,
+    max_total_assembly_bytes: usize,
 }
 
 struct RateLimiter {
     limits: HashMap<IpAddr, QueryWindow>,
     max_qps: u32,
+    max_entries: usize,
+    last_cleanup: u128,
 }
+
+const MAX_RATE_LIMIT_ENTRIES: usize = 100_000;
+const RATE_LIMIT_ENTRY_MAX_AGE_MS: u128 = 60_000;
+const RATE_LIMIT_CLEANUP_INTERVAL_MS: u128 = 1_000;
 
 struct QueryWindow {
     count: u32,
@@ -45,21 +53,36 @@ struct QueryWindow {
 
 impl RateLimiter {
     fn new(max_qps: u32) -> Self {
+        Self::with_max_entries(max_qps, MAX_RATE_LIMIT_ENTRIES)
+    }
+
+    fn with_max_entries(max_qps: u32, max_entries: usize) -> Self {
         Self {
             limits: HashMap::new(),
             max_qps,
+            max_entries,
+            last_cleanup: 0,
         }
     }
 
     fn check_and_update(&mut self, ip: IpAddr, now: u128) -> bool {
-        const WINDOW_MS: u128 = 1000;
+        const WINDOW_MS: u128 = 1_000;
+
+        if now.saturating_sub(self.last_cleanup) >= RATE_LIMIT_CLEANUP_INTERVAL_MS {
+            self.cleanup_old_entries(now);
+            self.last_cleanup = now;
+        }
+
+        if !self.limits.contains_key(&ip) && self.limits.len() >= self.max_entries {
+            return false;
+        }
 
         let entry = self.limits.entry(ip).or_insert(QueryWindow {
             count: 0,
             window_start: now,
         });
 
-        if now - entry.window_start >= WINDOW_MS {
+        if now.saturating_sub(entry.window_start) >= WINDOW_MS {
             entry.count = 1;
             entry.window_start = now;
             return true;
@@ -70,9 +93,9 @@ impl RateLimiter {
     }
 
     fn cleanup_old_entries(&mut self, now: u128) {
-        const MAX_AGE_MS: u128 = 60000;
-        self.limits
-            .retain(|_, window| now - window.window_start < MAX_AGE_MS);
+        self.limits.retain(|_, window| {
+            now.saturating_sub(window.window_start) < RATE_LIMIT_ENTRY_MAX_AGE_MS
+        });
     }
 }
 
@@ -124,21 +147,59 @@ struct ServerArgs {
     #[arg(long = "db", value_name = "PATH", default_value = "dnsm.db")]
     db_path: PathBuf,
 
-    /// Log progress every n unique chunks (n > 0)
-    #[arg(long = "progress-every", value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    /// Deprecated no-op retained for command-line compatibility
+    #[arg(
+        long = "progress-every",
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..),
+        hide = true
+    )]
     progress_every: Option<u32>,
 
     /// Garbage-collect inactive assemblies older than this many ms (default: 30000ms = 30s)
     #[arg(long = "gc-ms", value_name = "MS")]
     gc_ms: Option<u128>,
 
-    /// Maximum concurrent assembly sessions (prevents memory exhaustion, default: 10_000)
+    /// Maximum concurrent assembly sessions (prevents memory exhaustion, default: 10_000).
+    /// Must be at least 1.
     #[arg(
         long = "max-assemblies",
         value_name = "COUNT",
         default_value_t = 10_000
     )]
     max_assemblies: usize,
+
+    /// Maximum chunks retained for one incomplete assembly (default: 8192)
+    #[arg(
+        long = "max-assembly-chunks",
+        value_name = "COUNT",
+        default_value_t = 8_192
+    )]
+    max_assembly_chunks: usize,
+
+    /// Maximum chunks retained across all incomplete assemblies (default: 65536)
+    #[arg(
+        long = "max-total-assembly-chunks",
+        value_name = "COUNT",
+        default_value_t = 65_536
+    )]
+    max_total_assembly_chunks: usize,
+
+    /// Maximum compressed bytes retained for one incomplete assembly (default: 2MB)
+    #[arg(
+        long = "max-assembly-bytes",
+        value_name = "BYTES",
+        default_value_t = 2 * 1024 * 1024
+    )]
+    max_assembly_bytes: usize,
+
+    /// Maximum compressed bytes retained across all incomplete assemblies (default: 64MB)
+    #[arg(
+        long = "max-total-assembly-bytes",
+        value_name = "BYTES",
+        default_value_t = 64 * 1024 * 1024
+    )]
+    max_total_assembly_bytes: usize,
 
     /// TTL for A-record answers (default: 0)
     #[arg(long = "ans-ttl", value_name = "SEC", default_value_t = 0)]
@@ -160,14 +221,19 @@ struct ServerArgs {
     #[arg(long = "no-response")]
     no_response: bool,
 
-    /// Maximum decompressed payload size in bytes (default: 12582912 = 12MB).
-    /// Prevents decompression bomb attacks. Set to 0 to disable limit (unsafe).
+    /// Maximum decompressed payload size in bytes (default: 1048576 = 1MB).
+    /// Prevents decompression bomb attacks. Requires --allow-unlimited-decompress to set 0.
     #[arg(
         long = "max-decompressed-bytes",
         value_name = "BYTES",
-        default_value_t = 12 * 1024 * 1024
+        default_value_t = 1024 * 1024
     )]
     max_decompressed_bytes: u32,
+
+    /// Allow --max-decompressed-bytes 0 (no limit). Unsafe: a single query
+    /// can decompress to arbitrary size.
+    #[arg(long = "allow-unlimited-decompress")]
+    allow_unlimited_decompress: bool,
 
     /// Maximum queries per second per IP address. Set to 0 to disable rate limiting.
     /// Aims to prevent UDP amplification/reflection attacks. Default: 1000 qps.
@@ -180,8 +246,8 @@ pub(crate) struct Assembly {
     rmax: Option<u16>,
     chunks: HashMap<u16, Vec<u8>>, // remaining -> data
     have_r: HashSet<u16>,
+    stored_bytes: usize,
     last_seen: u128,
-    recv_unique: u32,
     completed: bool,
     mailbox: Option<u64>, // mailbox assignment (from first chunk options)
 }
@@ -192,8 +258,8 @@ impl Assembly {
             rmax: None,
             chunks: HashMap::new(),
             have_r: HashSet::new(),
+            stored_bytes: 0,
             last_seen: now,
-            recv_unique: 0,
             completed: false,
             mailbox: None,
         }
@@ -205,6 +271,39 @@ fn main() -> std::io::Result<()> {
 
     if args.tcp_mailbox && args.mailbox_zone.is_none() {
         eprintln!("--tcp-mailbox requires --mailbox-zone");
+        std::process::exit(2);
+    }
+
+    if args.progress_every.is_some() {
+        eprintln!("warning: --progress-every is deprecated and has no effect");
+    }
+
+    if args.max_assemblies == 0 {
+        eprintln!("--max-assemblies must be at least 1");
+        std::process::exit(2);
+    }
+
+    if args.max_assembly_chunks == 0
+        || args.max_total_assembly_chunks == 0
+        || args.max_assembly_bytes == 0
+        || args.max_total_assembly_bytes == 0
+    {
+        eprintln!("assembly limits must be at least 1");
+        std::process::exit(2);
+    }
+
+    if args.max_assembly_chunks > args.max_total_assembly_chunks {
+        eprintln!("--max-assembly-chunks cannot exceed --max-total-assembly-chunks");
+        std::process::exit(2);
+    }
+
+    if args.max_assembly_bytes > args.max_total_assembly_bytes {
+        eprintln!("--max-assembly-bytes cannot exceed --max-total-assembly-bytes");
+        std::process::exit(2);
+    }
+
+    if args.max_decompressed_bytes == 0 && !args.allow_unlimited_decompress {
+        eprintln!("--max-decompressed-bytes 0 requires --allow-unlimited-decompress");
         std::process::exit(2);
     }
 
@@ -221,9 +320,12 @@ fn main() -> std::io::Result<()> {
         fixed_ip_str,
         log_path,
         db_path,
-        progress_every,
         gc_ms,
         max_assemblies,
+        max_assembly_chunks,
+        max_total_assembly_chunks,
+        max_assembly_bytes,
+        max_total_assembly_bytes,
         ans_ttl,
         neg_ttl,
         accept_ascii_only,
@@ -315,7 +417,6 @@ fn main() -> std::io::Result<()> {
     let cfg = ServerCfg {
         zone_labels,
         mailbox_zone_labels,
-        progress_every,
         ans_ttl,
         neg_ttl,
         pretty_stdout: true,
@@ -328,6 +429,10 @@ fn main() -> std::io::Result<()> {
             None
         },
         max_assemblies,
+        max_assembly_chunks,
+        max_total_assembly_chunks,
+        max_assembly_bytes,
+        max_total_assembly_bytes,
     };
     // Optionally spawn mailbox-only TCP listener
     if tcp_mailbox && cfg.mailbox_zone_labels.as_ref().is_some() {
@@ -345,21 +450,28 @@ fn main() -> std::io::Result<()> {
                         bind_addr_tcp
                     );
                 }
-                let dbh = match Connection::open(&db_path_tcp) {
-                    Ok(conn) => conn,
-                    Err(e) => {
-                        eprintln!(
-                            "failed to open db at {:?} for tcp-mailbox: {}",
-                            db_path_tcp, e
-                        );
-                        return;
+                let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                const MAX_TCP_CONNS: usize = 64;
+                while let Ok((stream, _addr)) = listener.accept() {
+                    if active.load(std::sync::atomic::Ordering::Relaxed) >= MAX_TCP_CONNS {
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        continue;
                     }
-                };
-                while let Ok((mut stream, _addr)) = listener.accept() {
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-                    let _ = mailbox::handle_tcp_mailbox_conn(&mut stream, &cfg_tcp, &dbh);
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let cfg_conn = cfg_tcp.clone();
+                    let db_path_conn = db_path_tcp.clone();
+                    let active_conn = active.clone();
+                    std::thread::spawn(move || {
+                        let mut stream = stream;
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                        if let Ok(dbh) = Connection::open(&db_path_conn) {
+                            storage::configure_pragmas(&dbh);
+                            let _ = mailbox::handle_tcp_mailbox_conn(&mut stream, &cfg_conn, &dbh);
+                        }
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        active_conn.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    });
                 }
             }
             Err(e) => {
@@ -368,10 +480,11 @@ fn main() -> std::io::Result<()> {
         });
     }
     let mut assemblies: HashMap<u64, Assembly> = HashMap::new();
+    let mut assembly_chunks: usize = 0;
+    let mut assembly_bytes: usize = 0;
     let mut recv_count: u64 = 0;
 
     let mut rate_limiter = cfg.rate_limit_qps.map(RateLimiter::new);
-    let mut rate_limit_cleanup_counter: u32 = 0;
 
     let mut buf = [0u8; 512];
     loop {
@@ -385,25 +498,19 @@ fn main() -> std::io::Result<()> {
 
         let ts = dns_handler::now_millis();
 
-        if let Some(ref mut limiter) = rate_limiter {
-            if !limiter.check_and_update(peer.ip(), ts) {
-                if cfg.pretty_stdout {
-                    eprintln!(
-                        "{} {} Rate limit exceeded from {} ({} qps max)",
-                        style("[RATE_LIMIT]").yellow().bold(),
-                        style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
-                        dns_handler::format_socket(peer),
-                        limiter.max_qps
-                    );
-                }
-                continue;
+        if let Some(ref mut limiter) = rate_limiter
+            && !limiter.check_and_update(peer.ip(), ts)
+        {
+            if cfg.pretty_stdout {
+                eprintln!(
+                    "{} {} Rate limit exceeded from {} ({} qps max)",
+                    style("[RATE_LIMIT]").yellow().bold(),
+                    style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
+                    dns_handler::format_socket(peer),
+                    limiter.max_qps
+                );
             }
-
-            rate_limit_cleanup_counter += 1;
-            if rate_limit_cleanup_counter >= 1000 {
-                limiter.cleanup_old_entries(ts);
-                rate_limit_cleanup_counter = 0;
-            }
+            continue;
         }
 
         let pkt = &buf[..len];
@@ -742,6 +849,8 @@ fn main() -> std::io::Result<()> {
                 &domain_for_db,
                 &cfg,
                 &mut assemblies,
+                &mut assembly_chunks,
+                &mut assembly_bytes,
                 ts,
                 &mut log,
                 peer,
@@ -751,7 +860,15 @@ fn main() -> std::io::Result<()> {
             recv_count += 1;
             if recv_count.is_multiple_of(200) {
                 let age = gc_ms.unwrap_or_else(|| Duration::from_secs(30).as_millis());
-                dns_handler::gc_assemblies(&mut assemblies, ts, age, &mut log, cfg.pretty_stdout);
+                dns_handler::gc_assemblies(
+                    &mut assemblies,
+                    &mut assembly_chunks,
+                    &mut assembly_bytes,
+                    ts,
+                    age,
+                    &mut log,
+                    cfg.pretty_stdout,
+                );
             }
         }
 
@@ -790,7 +907,7 @@ fn main() -> std::io::Result<()> {
                     }
 
                     // Collect distinct messages newest-first, prefixed with 12-hex id + tab
-                    let msgs: Vec<Vec<u8>> = match mailbox::collect_distinct_mailbox_messages(
+                    let page = match mailbox::collect_distinct_mailbox_messages(
                         &db, &mb_hex, pivot_ts,
                     ) {
                         Ok(v) => v,
@@ -801,12 +918,15 @@ fn main() -> std::io::Result<()> {
                                 ts,
                                 dns_handler::json_escape(&e.to_string())
                             );
-                            Vec::new()
+                            mailbox::MailboxPage {
+                                messages: Vec::new(),
+                                truncated: false,
+                            }
                         }
                     };
 
                     let zone = cfg.mailbox_zone_labels.as_ref().unwrap();
-                    let mut resp = if msgs.is_empty() {
+                    let mut resp = if page.messages.is_empty() {
                         dns_handler::build_negative_nodata_with_soa(
                             pkt,
                             hdr,
@@ -821,9 +941,9 @@ fn main() -> std::io::Result<()> {
                             hdr,
                             q_end,
                             cfg.ans_ttl,
-                            &msgs,
+                            &page.messages,
                             480,
-                            true,
+                            page.truncated,
                         )
                     };
                     if query_has_edns {
@@ -837,7 +957,7 @@ fn main() -> std::io::Result<()> {
                         &mut log,
                         ts,
                         &mb_hex,
-                        msgs.len(),
+                        page.messages.len(),
                         dns_handler::read_u16(&resp[6..8]),
                         pivot_ts,
                     );
@@ -864,4 +984,40 @@ fn main() -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deprecated_progress_option_remains_parseable() {
+        let args =
+            ServerArgs::try_parse_from(["dnsm-server", "x.example", "--progress-every", "10"])
+                .unwrap();
+        assert_eq!(args.progress_every, Some(10));
+    }
+
+    #[test]
+    fn rate_limiter_drops_new_ips_at_capacity_without_blocking_known_ips() {
+        let mut limiter = RateLimiter::with_max_entries(10, 2);
+        let first = IpAddr::from([192, 0, 2, 1]);
+        let second = IpAddr::from([192, 0, 2, 2]);
+        let third = IpAddr::from([192, 0, 2, 3]);
+
+        assert!(limiter.check_and_update(first, 1));
+        assert!(limiter.check_and_update(second, 1));
+        assert!(!limiter.check_and_update(third, 1));
+        assert!(limiter.check_and_update(first, 2));
+        assert_eq!(limiter.limits.len(), 2);
+    }
+
+    #[test]
+    fn rate_limiter_reclaims_stale_entries_on_timed_cleanup() {
+        let mut limiter = RateLimiter::with_max_entries(10, 1);
+        let old = IpAddr::from([192, 0, 2, 1]);
+        let new = IpAddr::from([192, 0, 2, 2]);
+
+        assert!(limiter.check_and_update(old, 1));
+        assert!(limiter.check_and_update(new, RATE_LIMIT_ENTRY_MAX_AGE_MS + 1));
+        assert!(!limiter.limits.contains_key(&old));
+        assert!(limiter.limits.contains_key(&new));
+    }
+}

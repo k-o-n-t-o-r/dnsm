@@ -28,7 +28,7 @@ fn dig_mailbox_txt_tcp_returns_more_than_udp() {
         return;
     }
 
-    let server_path = std::env::var("CARGO_BIN_EXE_dnsm_server")
+    let server_path = std::env::var("CARGO_BIN_EXE_dnsm-server")
         .unwrap_or_else(|_| "./target/release/dnsm-server".to_string());
     if !Path::new(&server_path).exists() {
         eprintln!("skipping: server binary not found at {}", server_path);
@@ -68,16 +68,14 @@ fn dig_mailbox_txt_tcp_returns_more_than_udp() {
     let port = find_free_udp_port();
     let bind_addr = format!("127.0.0.1:{}", port);
 
-    // Start server with TCP mailbox enabled
     let mut child = std::process::Command::new(server_path.clone())
-        .arg(&bind_addr)
         .arg("x.example")
-        .arg("--mailbox-zone")
-        .arg("m.example")
+        .args(["--bind", &bind_addr])
+        .args(["--mailbox-zone", "m.example"])
         .arg("--tcp-mailbox")
-        .arg("127.0.0.1")
-        .arg(tmp.join("queries.log").to_string_lossy().to_string())
-        .arg(db_path.to_string_lossy().to_string())
+        .args(["--respond_with", "127.0.0.1"])
+        .args(["--log", &tmp.join("queries.log").to_string_lossy()])
+        .args(["--db", &db_path.to_string_lossy()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()

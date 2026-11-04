@@ -1,4 +1,4 @@
-.PHONY: build_client clean wasm clippy test
+.PHONY: build_all build_client build_server build_ws build_wasm build_python develop_python clean update clippy test fmt all
 
 build_all:
 	cargo build --release --all-features --all-targets
@@ -28,10 +28,13 @@ build_python:
 develop_python:
 	maturin develop --no-default-features --features python
 
+fmt:
+	cargo fmt --all
+
 clippy:
-	cargo clippy --all-targets --all-features --fix
+	cargo clippy --all-targets --all-features -- -D warnings
 
 test:
 	cargo test --all-features
 
-all: clean update build_all clippy test
+all: clean update build_all test

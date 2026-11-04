@@ -12,20 +12,17 @@ use std::collections::HashSet;
 use std::io::{BufWriter, Write};
 use std::net::TcpStream;
 
-fn hex12_from_bytes(bytes: &[u8]) -> String {
-    let take = bytes.len().min(6);
-    dnsm::to_hex_lower(&bytes[..take])
-}
+const MAX_MAILBOX_MESSAGES: usize = 1_000;
+const MAX_MAILBOX_SCAN_ROWS: usize = 4_000;
+const MAX_MAILBOX_RESPONSE_BYTES: usize = 64 * 1024;
 
-pub(crate) fn extract_mailbox_and_message_id(mb_hex: &str, data: &[u8]) -> (String, Vec<u8>) {
-    (
-        mb_hex.to_ascii_lowercase(),
-        compute_message_id(data).to_vec(),
-    )
+pub(crate) struct MailboxPage {
+    pub(crate) messages: Vec<Vec<u8>>,
+    pub(crate) truncated: bool,
 }
 
 pub(crate) fn prepare_message_with_id(msg_id: &[u8], data: &[u8]) -> Vec<u8> {
-    let msg_hex = hex12_from_bytes(msg_id);
+    let msg_hex = to_hex_lower(&msg_id[..msg_id.len().min(6)]);
     let mut combined = Vec::with_capacity(msg_hex.len() + 1 + data.len());
     combined.extend_from_slice(msg_hex.as_bytes());
     combined.push(b'\t');
@@ -50,13 +47,13 @@ pub(crate) fn find_pivot_ts(
                 return Ok(ts);
             }
             if let Ok(mut stmt) = db.prepare(
-                "SELECT data, received_at FROM messages WHERE mailbox=?1 ORDER BY received_at DESC",
+                "SELECT data, received_at FROM messages WHERE mailbox=?1 ORDER BY received_at DESC, id DESC LIMIT 4000",
             ) && let Ok(iter) = stmt.query_map(params![&mailbox_key], |row| {
                 Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
             }) {
                 for r in iter.flatten() {
                     let (data, tsv) = r;
-                    let (_, mid) = extract_mailbox_and_message_id(&mailbox_key, &data);
+                    let mid = compute_message_id(&data);
                     if mid_bytes.as_slice() == mid.as_slice() {
                         return Ok(Some(tsv));
                     }
@@ -78,14 +75,14 @@ pub(crate) fn find_pivot_ts(
                         return Ok(ts);
                     }
             if let Ok(mut stmt) = db.prepare(
-                "SELECT data, received_at FROM messages WHERE mailbox=?1 ORDER BY received_at DESC",
+                "SELECT data, received_at FROM messages WHERE mailbox=?1 ORDER BY received_at DESC, id DESC LIMIT 4000",
             ) && let Ok(iter) = stmt.query_map(params![&mailbox_key], |row| {
                 Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
             }) {
                 for r in iter.flatten() {
                     let (data, tsv) = r;
-                    let (_, mid) = extract_mailbox_and_message_id(&mailbox_key, &data);
-                    if hex12_from_bytes(&mid) == token {
+                    let mid = compute_message_id(&data);
+                    if to_hex_lower(&mid[..mid.len().min(6)]) == token {
                         return Ok(Some(tsv));
                     }
                 }
@@ -100,60 +97,100 @@ pub(crate) fn collect_distinct_mailbox_messages(
     db: &Connection,
     mb_hex: &str,
     pivot_ts: Option<i64>,
-) -> rusqlite::Result<Vec<Vec<u8>>> {
+) -> rusqlite::Result<MailboxPage> {
+    collect_distinct_mailbox_messages_with_limits(
+        db,
+        mb_hex,
+        pivot_ts,
+        MAX_MAILBOX_MESSAGES,
+        MAX_MAILBOX_SCAN_ROWS,
+        MAX_MAILBOX_RESPONSE_BYTES,
+    )
+}
+
+fn collect_distinct_mailbox_messages_with_limits(
+    db: &Connection,
+    mb_hex: &str,
+    pivot_ts: Option<i64>,
+    max_messages: usize,
+    max_scan_rows: usize,
+    max_bytes: usize,
+) -> rusqlite::Result<MailboxPage> {
     let mailbox_key = mb_hex.to_ascii_lowercase();
     let mut rows_sql = String::from(
-        "SELECT message_key, data, received_at, message_id FROM messages WHERE mailbox = ?1 AND (message_type IS NULL OR message_type = 'message')",
+        "SELECT data, message_id FROM messages WHERE mailbox = ?1 AND (message_type IS NULL OR message_type = 'message')",
     );
     if pivot_ts.is_some() {
         rows_sql.push_str(" AND received_at < ?2");
     }
-    rows_sql.push_str(" ORDER BY received_at DESC");
+    rows_sql.push_str(" ORDER BY received_at DESC, id DESC");
 
-    let mut outv: Vec<Vec<u8>> = Vec::new();
+    let mut messages = Vec::new();
     let mut seen_ids: HashSet<Vec<u8>> = HashSet::new();
+    let mut scanned_rows = 0usize;
+    let mut used_bytes = 0usize;
+    let mut truncated = false;
     let mut stmt = db.prepare(&rows_sql)?;
 
+    let mut consume_row = |data: Vec<u8>, mid: Option<Vec<u8>>| {
+        scanned_rows = scanned_rows.saturating_add(1);
+        if scanned_rows > max_scan_rows {
+            truncated = true;
+            return false;
+        }
+
+        let message_id = mid.unwrap_or_else(|| compute_message_id(&data).to_vec());
+        if !seen_ids.insert(message_id.clone()) {
+            return true;
+        }
+        if messages.len() >= max_messages {
+            truncated = true;
+            return false;
+        }
+
+        let prefix_bytes = message_id.len().min(6) * 2 + 1;
+        let remaining = max_bytes.saturating_sub(used_bytes);
+        if remaining <= prefix_bytes {
+            truncated = true;
+            return false;
+        }
+        let take = data.len().min(remaining - prefix_bytes);
+        let prepared = prepare_message_with_id(&message_id, &data[..take]);
+        used_bytes = used_bytes.saturating_add(prepared.len());
+        messages.push(prepared);
+        if take < data.len() {
+            truncated = true;
+            return false;
+        }
+        true
+    };
+
     if let Some(pivot) = pivot_ts {
-        if let Ok(iter) = stmt.query_map(params![&mailbox_key, pivot], |row| {
-            let sid: i64 = row.get(0)?;
-            let data: Vec<u8> = row.get(1)?;
-            let ts_val: i64 = row.get(2)?;
-            let mid: Option<Vec<u8>> = row.get(3)?;
-            Ok((sid, data, ts_val, mid))
-        }) {
-            for r in iter.flatten() {
-                let (_sid, data, _ts_val, mid) = r;
-                let key = mid.clone().unwrap_or_else(|| data.clone());
-                if seen_ids.insert(key) {
-                    let message_id_bytes = match mid {
-                        Some(existing) => existing,
-                        None => extract_mailbox_and_message_id(&mailbox_key, &data).1,
-                    };
-                    outv.push(prepare_message_with_id(&message_id_bytes, &data));
-                }
+        let rows = stmt.query_map(params![&mailbox_key, pivot], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
+        })?;
+        for row in rows {
+            let (data, mid) = row?;
+            if !consume_row(data, mid) {
+                break;
             }
         }
-    } else if let Ok(iter) = stmt.query_map(params![&mailbox_key], |row| {
-        let sid: i64 = row.get(0)?;
-        let data: Vec<u8> = row.get(1)?;
-        let ts_val: i64 = row.get(2)?;
-        let mid: Option<Vec<u8>> = row.get(3)?;
-        Ok((sid, data, ts_val, mid))
-    }) {
-        for r in iter.flatten() {
-            let (_sid, data, _ts_val, mid) = r;
-            let key = mid.clone().unwrap_or_else(|| data.clone());
-            if seen_ids.insert(key) {
-                let message_id_bytes = match mid {
-                    Some(existing) => existing,
-                    None => extract_mailbox_and_message_id(&mailbox_key, &data).1,
-                };
-                outv.push(prepare_message_with_id(&message_id_bytes, &data));
+    } else {
+        let rows = stmt.query_map(params![&mailbox_key], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
+        })?;
+        for row in rows {
+            let (data, mid) = row?;
+            if !consume_row(data, mid) {
+                break;
             }
         }
     }
-    Ok(outv)
+
+    Ok(MailboxPage {
+        messages,
+        truncated,
+    })
 }
 
 pub(crate) fn build_mailbox_txt_response(
@@ -163,7 +200,7 @@ pub(crate) fn build_mailbox_txt_response(
     ttl: u32,
     msgs: &[Vec<u8>],
     budget: usize,
-    set_tc_if_truncated: bool,
+    more_available: bool,
 ) -> Vec<u8> {
     let rd = req_hdr.flags & 0x0100;
     let qr = 0x8000;
@@ -193,17 +230,24 @@ pub(crate) fn build_mailbox_txt_response(
         an_count = an_count.saturating_add(1);
     }
 
+    let mut force_tc = false;
     if an_count == 0 && !msgs.is_empty() {
         let m = &msgs[0];
-        let take = m.len().min(200);
-        build_txt_rr_into(&mut resp, ttl, &m[..take]);
-        an_count = 1;
+        let available = budget.saturating_sub(resp.len().saturating_add(13));
+        let take = m.len().min(200).min(available);
+        if take > 0 {
+            build_txt_rr_into(&mut resp, ttl, &m[..take]);
+            an_count = 1;
+        }
+        if take < m.len() {
+            force_tc = true;
+        }
     }
 
     resp[an_idx] = ((an_count >> 8) & 0xFF) as u8;
     resp[an_idx + 1] = (an_count & 0xFF) as u8;
 
-    if set_tc_if_truncated && (an_count as usize) < msgs.len() {
+    if force_tc || more_available || (an_count as usize) < msgs.len() {
         let cur = read_u16(&resp[flags_idx..flags_idx + 2]);
         let with_tc = cur | 0x0200;
         resp[flags_idx] = ((with_tc >> 8) & 0xFF) as u8;
@@ -261,13 +305,25 @@ pub(crate) fn handle_tcp_mailbox_conn(
                 pivot_ts = ts_opt;
             }
         }
-        let msgs = collect_distinct_mailbox_messages(db, &mb_hex, pivot_ts).unwrap_or_default();
+        let page =
+            collect_distinct_mailbox_messages(db, &mb_hex, pivot_ts).unwrap_or(MailboxPage {
+                messages: Vec::new(),
+                truncated: false,
+            });
 
         let zone = cfg.mailbox_zone_labels.as_ref().unwrap();
-        let mut resp = if msgs.is_empty() {
+        let mut resp = if page.messages.is_empty() {
             build_negative_nodata_with_soa(&req, hdr, q_end, zone, cfg.neg_ttl)
         } else {
-            build_mailbox_txt_response(&req, hdr, q_end, cfg.ans_ttl, &msgs, 32 * 1024, false)
+            build_mailbox_txt_response(
+                &req,
+                hdr,
+                q_end,
+                cfg.ans_ttl,
+                &page.messages,
+                32 * 1024,
+                page.truncated,
+            )
         };
         if crate::dns_handler::has_edns(&req, q_end) {
             crate::dns_handler::append_opt(&mut resp, 512);
@@ -304,4 +360,59 @@ pub(crate) fn log_mailbox_query(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    fn init_db() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_key INTEGER NOT NULL,
+                mailbox TEXT,
+                data BLOB NOT NULL,
+                received_at INTEGER NOT NULL,
+                message_id BLOB,
+                message_type TEXT DEFAULT 'message'
+            );",
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn mailbox_collection_stops_at_byte_budget() {
+        let db = init_db();
+        let mailbox = "000000000042";
+        for (id, data) in [b"newest".as_slice(), b"older".as_slice()]
+            .into_iter()
+            .enumerate()
+        {
+            db.execute(
+                "INSERT INTO messages (message_key, mailbox, data, received_at, message_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    id as i64 + 1,
+                    mailbox,
+                    data,
+                    id as i64 + 1,
+                    compute_message_id(data).as_slice(),
+                ],
+            )
+            .unwrap();
+        }
+
+        let page = collect_distinct_mailbox_messages_with_limits(
+            &db,
+            mailbox,
+            None,
+            10,
+            10,
+            13 + b"older".len(),
+        )
+        .unwrap();
+
+        assert_eq!(page.messages.len(), 1);
+        assert!(page.truncated);
+        assert!(page.messages[0].ends_with(b"older"));
+    }
+}

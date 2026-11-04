@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/k-o-n-t-o-r/dnsm"
+    "url": "git+https://github.com/k-o-n-t-o-r/dnsm.git"
   },
   "homepage": "https://dnsm.re",
   "keywords": [

@@ -51,6 +51,11 @@ jobs:
             echo "::error::Input version ($ver) does not match Cargo.toml ($cargo_ver)"
             exit 1
           fi
+          pyproject_ver=$(sed -n 's/^version\s*=\s*"\([0-9]\+\.[0-9]\+\.[0-9]\+\)"/\1/p' pyproject.toml | head -n1)
+          if [ "$ver" != "$pyproject_ver" ]; then
+            echo "::error::Cargo.toml version ($ver) does not match pyproject.toml ($pyproject_ver)"
+            exit 1
+          fi
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "tag=v${ver}" >> "$GITHUB_OUTPUT"
 
@@ -96,7 +101,7 @@ jobs:
 
       - name: Install cargo-zigbuild
         if: matrix.cross
-        run: cargo install cargo-zigbuild --locked
+        run: cargo install cargo-zigbuild@0.22.3 --locked
 
       - name: Build
         shell: bash
@@ -367,7 +372,9 @@ jobs:
           rustflags: ""
 
       - name: Install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli --locked
+        run: |
+          version=$(awk '$0 == "name = \"wasm-bindgen\"" { found=1; next } found && /^version = / { gsub(/[" ]/, "", $3); print $3; exit }' Cargo.lock)
+          cargo install "wasm-bindgen-cli@$version" --locked
 
       - name: Build WASM
         run: |

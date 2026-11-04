@@ -11,13 +11,12 @@ use std::time::{Duration, Instant};
 const TEST_PORT: u16 = 55353;
 
 fn get_bin(name: &str) -> Option<String> {
-    let key1 = format!("CARGO_BIN_EXE_{}", name.replace('-', "_"));
-    if let Ok(p) = std::env::var(&key1)
+    let key = format!("CARGO_BIN_EXE_{}", name);
+    if let Ok(p) = std::env::var(&key)
         && Path::new(&p).exists()
     {
         return Some(p);
     }
-    // Fallback to release path
     let fallback = format!("./target/release/{}", name);
     if Path::new(&fallback).exists() {
         return Some(fallback);
@@ -69,44 +68,32 @@ fn tunnel_random_payloads_end_to_end() {
     ));
     fs::create_dir_all(&db_dir).expect("mkdir db dir");
     let db_path = db_dir.join("msgs.sqlite");
-    let db = Connection::open(&db_path).expect("open db");
-    db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            message_key INTEGER NOT NULL,
-            mailbox TEXT,
-            data BLOB NOT NULL,
-            received_at INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_messages_key ON messages(message_key);",
-    )
-    .expect("init schema");
 
     let mut log_path = std::env::temp_dir();
     log_path.push(format!("dnsm_e2e_{}.log", std::process::id()));
 
-    // Start server
     let mut child = Command::new(&server)
-        .arg(&bind_addr)
         .arg(zone)
-        .arg(fixed_ip)
-        .arg(&log_path)
-        .arg(db_path.to_string_lossy().as_ref())
+        .args(["--bind", &bind_addr])
+        .args(["--respond_with", fixed_ip])
+        .args(["--log", &log_path.to_string_lossy()])
+        .args(["--db", &db_path.to_string_lossy()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("launch server");
 
-    thread::sleep(Duration::from_millis(200));
+    thread::sleep(Duration::from_millis(500));
 
-    // If server exited early, skip test (likely cannot bind in this environment)
     if let Ok(Some(status)) = child.try_wait() {
-        eprintln!(
-            "skipping e2e tunnel test: server exited early with status {:?}",
+        panic!(
+            "e2e tunnel test: server exited early with status {:?}",
             status
         );
-        return;
     }
+
+    let db = Connection::open(&db_path).expect("open db");
+    db.busy_timeout(Duration::from_secs(2)).ok();
 
     let sizes: &[usize] = &[1, 2, 30, 59, 60, 61, 127, 1024, 4096, 8191, 16 * 1024];
 
@@ -115,8 +102,9 @@ fn tunnel_random_payloads_end_to_end() {
         for b in &mut data {
             *b = fastrand::u8(..);
         }
+        // Ensure non-ASCII so client treats it as binary (no whitespace trim)
+        data[sz - 1] = 0xFF;
 
-        // Launch client and feed stdin
         let mut cli = Command::new(&client)
             .args(["--zone", zone])
             .args(["--resolver-ip", &bind_addr])
@@ -203,6 +191,7 @@ fn tunnel_random_payloads_end_to_end() {
         for b in &mut data {
             *b = fastrand::u8(..);
         }
+        data[sz - 1] = 0xFF;
 
         let mut cli = Command::new(&client)
             .args(["--zone", zone])

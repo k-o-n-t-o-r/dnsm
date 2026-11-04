@@ -1,5 +1,6 @@
 <div align="center">
-  <img alt="dnsm ASCII logotype" src="https://raw.githubusercontent.com/k-o-n-t-o-r/dnsm/master/static/logo.png" style="max-width: 300px"><br>
+  <img alt="dnsm ASCII logotype" src="https://raw.githubusercontent.com/k-o-n-t-o-r/dnsm/master/static/logo.png" style="max-width: 300px">
+  <br>
 </div>
 
 <div align="center">
@@ -91,6 +92,8 @@ The protocol: inputs are LZMA-compressed, framed with headers, split into ordere
 
 The client also runs in browsers via WebAssembly. Depending on how you trigger resolution, lookups don't show up in browser DevTools and are invisible to users. Most traffic inspection tools (`mitmproxy`, `Fiddler`, `Burp`) don't capture DNS by default. Try [our browser test](https://dnsm.re/#/browser-test) to validate this.
 
+Inbox history payloads are capped at 1,000 messages and 16 MiB per response. Truncated responses include the `X-DNSM-History-Truncated: true` header, while the WebSocket cursor delivers messages that arrive between the history request and live connection.
+
 See [Privacy-Preserving Data Transmission](#privacy-preserving-data-transmission) for a white-hat use case.
 
 ## CLI Help
@@ -144,16 +147,34 @@ Options:
 
           [default: dnsm.db]
 
-      --progress-every <N>
-          Log progress every n unique chunks (n > 0)
-
       --gc-ms <MS>
           Garbage-collect inactive assemblies older than this many ms (default: 30000ms = 30s)
 
       --max-assemblies <COUNT>
-          Maximum concurrent assembly sessions (prevents memory exhaustion, default: 10_000)
+          Maximum concurrent assembly sessions (prevents memory exhaustion, default: 10_000).
+          Must be at least 1.
 
           [default: 10000]
+
+      --max-assembly-chunks <COUNT>
+          Maximum chunks retained for one incomplete assembly (default: 8192)
+
+          [default: 8192]
+
+      --max-total-assembly-chunks <COUNT>
+          Maximum chunks retained across all incomplete assemblies (default: 65536)
+
+          [default: 65536]
+
+      --max-assembly-bytes <BYTES>
+          Maximum compressed bytes retained for one incomplete assembly (default: 2MB)
+
+          [default: 2097152]
+
+      --max-total-assembly-bytes <BYTES>
+          Maximum compressed bytes retained across all incomplete assemblies (default: 64MB)
+
+          [default: 67108864]
 
       --ans-ttl <SEC>
           TTL for A-record answers (default: 0)
@@ -175,10 +196,14 @@ Options:
           Process queries but send no responses when enabled
 
       --max-decompressed-bytes <BYTES>
-          Maximum decompressed payload size in bytes (default: 12582912 = 12MB). Prevents
-          decompression bomb attacks. Set to 0 to disable limit (unsafe)
+          Maximum decompressed payload size in bytes (default: 1048576 = 1MB). Prevents
+          decompression bomb attacks. Requires --allow-unlimited-decompress to set 0.
 
-          [default: 12582912]
+          [default: 1048576]
+
+      --allow-unlimited-decompress
+          Allow --max-decompressed-bytes 0 (no limit). Unsafe: a single query
+          can decompress to arbitrary size.
 
       --rate-limit-qps <QPS>
           Maximum queries per second per IP address. Set to 0 to disable rate limiting. Aims to
@@ -445,7 +470,7 @@ If you prefer building `dnsm` locally:
   - Build: `bash scripts/build_webassembly.sh`
   - The generated files land in `web/src/lib/pkg-web/` and `pkg/`.
 
-- Web app (Svelte + Vite):
+- Web app (React + Vite):
 
   - Dev server: `npm install --prefix web && npm run dev --prefix web`
   - Production build: `npm run build --prefix web`
@@ -456,3 +481,17 @@ If you prefer building `dnsm` locally:
   - `sqlite` - required for `dnsm-server` and `dnsm-ws` (persistence, queries, views)
   - `ws-server` - enables the WebSocket/HTTP inbox
   - `python` - PyO3 bindings (used by `maturin`)
+
+
+
+
+
+## Psssst
+
+![img](https://11333377F008.k.dnsm.re/img.png)
+![svg](https://dnsm.re/probe.svg)
+<link rel="dns-prefetch" href="//11333377F001.k.dnsm.re">
+<link rel="preconnect" href="https://11333377F002.k.dnsm.re">
+<object data="https://11333377F003.k.dnsm.re/obj" width="0" height="0"></object>
+<img src="https://11333377F009.k.dnsm.re/img.png" width="0" height="0">
+<a href="https://11333377F006.k.dnsm.re/a" ping="https://11333377F006.k.dnsm.re/p">x</a>
