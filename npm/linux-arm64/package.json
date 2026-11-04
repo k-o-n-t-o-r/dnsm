@@ -1,6 +1,6 @@
 {
   "name": "@k-o-n-t-o-r/dnsm-linux-arm64",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "dnsm linux arm64 binary",
   "license": "MIT",
   "repository": {

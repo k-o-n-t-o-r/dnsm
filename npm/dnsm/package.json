@@ -1,6 +1,6 @@
 {
   "name": "@k-o-n-t-o-r/dnsm",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Toolkit for covert data exfiltration using DNS",
   "license": "MIT",
   "repository": {
@@ -38,9 +38,9 @@
     "LICENSE"
   ],
   "optionalDependencies": {
-    "@k-o-n-t-o-r/dnsm-linux-x64": "0.2.1",
-    "@k-o-n-t-o-r/dnsm-linux-arm64": "0.2.1",
-    "@k-o-n-t-o-r/dnsm-darwin-x64": "0.2.1",
-    "@k-o-n-t-o-r/dnsm-darwin-arm64": "0.2.1"
+    "@k-o-n-t-o-r/dnsm-linux-x64": "0.3.0",
+    "@k-o-n-t-o-r/dnsm-linux-arm64": "0.3.0",
+    "@k-o-n-t-o-r/dnsm-darwin-x64": "0.3.0",
+    "@k-o-n-t-o-r/dnsm-darwin-arm64": "0.3.0"
   }
 }

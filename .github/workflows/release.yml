@@ -56,6 +56,17 @@ jobs:
             echo "::error::Cargo.toml version ($ver) does not match pyproject.toml ($pyproject_ver)"
             exit 1
           fi
+          for pkg in npm/dnsm npm/linux-x64 npm/linux-arm64 npm/darwin-x64 npm/darwin-arm64; do
+            npm_ver=$(jq -r .version "$pkg/package.json")
+            if [ "$ver" != "$npm_ver" ]; then
+              echo "::error::$pkg/package.json version ($npm_ver) does not match Cargo.toml ($ver)"
+              exit 1
+            fi
+          done
+          if ! jq -e --arg v "$ver" '.optionalDependencies | all(. == $v)' npm/dnsm/package.json >/dev/null; then
+            echo "::error::npm wrapper optionalDependencies do not match version $ver"
+            exit 1
+          fi
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "tag=v${ver}" >> "$GITHUB_OUTPUT"
 
