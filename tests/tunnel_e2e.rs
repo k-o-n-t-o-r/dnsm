@@ -102,9 +102,6 @@ fn tunnel_random_payloads_end_to_end() {
         for b in &mut data {
             *b = fastrand::u8(..);
         }
-        // Ensure non-ASCII so client treats it as binary (no whitespace trim)
-        data[sz - 1] = 0xFF;
-
         let mut cli = Command::new(&client)
             .args(["--zone", zone])
             .args(["--resolver-ip", &bind_addr])
@@ -191,7 +188,6 @@ fn tunnel_random_payloads_end_to_end() {
         for b in &mut data {
             *b = fastrand::u8(..);
         }
-        data[sz - 1] = 0xFF;
 
         let mut cli = Command::new(&client)
             .args(["--zone", zone])

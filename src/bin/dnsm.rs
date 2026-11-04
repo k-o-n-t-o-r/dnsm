@@ -158,12 +158,19 @@ fn parse_dns_response(buf: &[u8], len: usize) -> Option<DnsResponse> {
     })
 }
 
-fn build_query_from_domain(domain: &str) -> Vec<u8> {
+fn fill_secure_random(bytes: &mut [u8]) -> io::Result<()> {
+    getrandom::fill(bytes)
+        .map_err(|error| io::Error::other(format!("secure random failed: {error}")))
+}
+
+fn build_query_from_domain(domain: &str) -> io::Result<Vec<u8>> {
     fn write_u16(buf: &mut Vec<u8>, v: u16) {
         buf.extend_from_slice(&v.to_be_bytes());
     }
     let mut q = Vec::new();
-    let id = fastrand::u16(..);
+    let mut id_bytes = [0u8; 2];
+    fill_secure_random(&mut id_bytes)?;
+    let id = u16::from_be_bytes(id_bytes);
     write_u16(&mut q, id);
     write_u16(&mut q, 0x0100); // RD
     write_u16(&mut q, 1); // QD
@@ -177,7 +184,7 @@ fn build_query_from_domain(domain: &str) -> Vec<u8> {
     q.push(0);
     write_u16(&mut q, 1); // TYPE A
     write_u16(&mut q, 1); // CLASS IN
-    q
+    Ok(q)
 }
 
 fn parse_system_resolver() -> Option<String> {
@@ -259,12 +266,7 @@ fn main() -> io::Result<()> {
         Some(mb) => mb,
         None => {
             let mut buf = [0u8; 6];
-            std::fs::File::open("/dev/urandom")
-                .and_then(|mut f| {
-                    use std::io::Read;
-                    f.read_exact(&mut buf)
-                })
-                .expect("failed to read /dev/urandom for random mailbox ID");
+            fill_secure_random(&mut buf)?;
             format!(
                 "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
                 buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]
@@ -309,7 +311,7 @@ fn main() -> io::Result<()> {
                 if await_reply_ms > 0 {
                     s.set_read_timeout(Some(std::time::Duration::from_millis(await_reply_ms)))?;
                 }
-                let q = build_query_from_domain(&domain);
+                let q = build_query_from_domain(&domain)?;
                 let id = u16::from_be_bytes([q[0], q[1]]);
                 s.send(&q)?;
                 if await_reply_ms > 0 {
@@ -368,13 +370,6 @@ fn main() -> io::Result<()> {
     // --- Normal message mode ---
     let mut stdin_data = Vec::new();
     io::stdin().read_to_end(&mut stdin_data)?;
-
-    if let Ok(s) = std::str::from_utf8(&stdin_data) {
-        let trimmed = s.trim_end();
-        if trimmed.len() != stdin_data.len() {
-            stdin_data.truncate(trimmed.len());
-        }
-    }
 
     let opts = BuildOptions {
         mailbox: Some(mailbox_u64),
@@ -456,7 +451,7 @@ fn main() -> io::Result<()> {
     for (i, qname) in domains.iter().enumerate() {
         let remaining: u16 = (info.total_chunks - 1 - i) as u16;
         if let Some(ref s) = sock {
-            let q = build_query_from_domain(qname);
+            let q = build_query_from_domain(qname)?;
             let id = u16::from_be_bytes([q[0], q[1]]);
             if debug {
                 eprintln!(

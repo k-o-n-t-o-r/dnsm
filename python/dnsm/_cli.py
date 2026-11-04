@@ -236,11 +236,6 @@ def main(argv: list[str] | None = None) -> None:
 
     # --- Normal message mode ---
     stdin_data = sys.stdin.buffer.read()
-    try:
-        text = stdin_data.decode("utf-8")
-        stdin_data = text.rstrip().encode("utf-8")
-    except UnicodeDecodeError:
-        pass
 
     try:
         domains, info = dnsm.build_domains(stdin_data, args.zone, mailbox_hex)

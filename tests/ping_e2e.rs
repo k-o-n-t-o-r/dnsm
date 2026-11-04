@@ -451,10 +451,10 @@ fn cli_ping_dont_query_prints_short_domain() {
 }
 
 // ---------------------------------------------------------------------------
-// stdin whitespace trimming for text payloads
+// stdin whitespace preservation for text payloads
 // ---------------------------------------------------------------------------
 #[test]
-fn cli_strips_trailing_whitespace_from_text() {
+fn cli_preserves_trailing_whitespace_from_text() {
     let client = match get_bin("dnsm") {
         Some(p) => p,
         None => {
@@ -497,7 +497,7 @@ fn cli_strips_trailing_whitespace_from_text() {
         )
         .expect("query");
 
-    assert_eq!(data, b"hello", "trailing newline should be stripped");
+    assert_eq!(data, b"hello\n", "trailing newline should be preserved");
 }
 
 // ---------------------------------------------------------------------------
