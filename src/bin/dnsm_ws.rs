@@ -477,6 +477,17 @@ fn initial_last_id(
     }
 }
 
+async fn run_blocking_db<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> rusqlite::Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| format!("database worker failed: {error}"))?
+        .map_err(|error| error.to_string())
+}
+
 async fn handle_list_messages(
     state: AppState,
     mailbox: String,
@@ -486,8 +497,13 @@ async fn handle_list_messages(
         return Ok(rate_limited_response());
     }
     let response = if let Some(mb) = validate_mailbox_hex12(&mailbox) {
-        match open_readonly_db(&*state.db_path)
-            .and_then(|db| fetch_all_messages(&db, &mb, state.expose_peer_ip))
+        let db_path = state.db_path.clone();
+        let expose_peer_ip = state.expose_peer_ip;
+        match run_blocking_db(move || {
+            let db = open_readonly_db(&*db_path)?;
+            fetch_all_messages(&db, &mb, expose_peer_ip)
+        })
+        .await
         {
             Ok(page) => secure_response(
                 warp::reply::with_status(
@@ -545,23 +561,16 @@ async fn ws_session(
 ) {
     let (mut ws_tx, mut ws_rx) = ws.split();
 
-    // Open a dedicated read-only connection for this session
-    let db = match open_readonly_db(&*state.db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("websocket database open failed: {e}");
-            let _ = ws_tx
-                .send(Message::text(
-                    serde_json::json!({"error":"db_open_failed"}).to_string(),
-                ))
-                .await;
-            return;
-        }
-    };
-
     // A history cursor closes the HTTP-backlog/WebSocket-upgrade gap. Clients
     // without one retain the old live-only behavior and start at the current max id.
-    let mut last_id = match initial_last_id(&db, &mailbox_hex, requested_after_id) {
+    let initial_db_path = state.db_path.clone();
+    let initial_mailbox = mailbox_hex.clone();
+    let mut last_id = match run_blocking_db(move || {
+        let db = open_readonly_db(&*initial_db_path)?;
+        initial_last_id(&db, &initial_mailbox, requested_after_id)
+    })
+    .await
+    {
         Ok(v) => v,
         Err(e) => {
             eprintln!("websocket cursor query failed: {e}");
@@ -581,12 +590,13 @@ async fn ws_session(
     loop {
         tokio::select! {
             _ = ticker.next() => {
-                match fetch_new_messages_after(
-                    &db,
-                    &mailbox_hex,
-                    last_id,
-                    state.expose_peer_ip,
-                ) {
+                let poll_db_path = state.db_path.clone();
+                let poll_mailbox = mailbox_hex.clone();
+                let expose_peer_ip = state.expose_peer_ip;
+                match run_blocking_db(move || {
+                    let db = open_readonly_db(&*poll_db_path)?;
+                    fetch_new_messages_after(&db, &poll_mailbox, last_id, expose_peer_ip)
+                }).await {
                     Ok(new_msgs) => {
                         if !new_msgs.is_empty() {
                             last_id = new_msgs.last().unwrap().id;
@@ -631,6 +641,23 @@ async fn ws_session(
                 break;
             }
         }
+    }
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 
@@ -723,7 +750,16 @@ async fn main() {
         addr,
         state.db_path.display()
     );
-    warp::serve(routes).run(addr).await;
+    let shutdown = state.shutdown.clone();
+    warp::serve(routes)
+        .bind(addr)
+        .await
+        .graceful(async move {
+            wait_for_shutdown_signal().await;
+            shutdown.notify_waiters();
+        })
+        .run()
+        .await;
 }
 
 #[cfg(test)]
@@ -764,6 +800,15 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    #[tokio::test]
+    async fn database_work_runs_on_blocking_pool() {
+        let caller = std::thread::current().id();
+        let worker = run_blocking_db(|| Ok(std::thread::current().id()))
+            .await
+            .unwrap();
+        assert_ne!(caller, worker);
     }
 
     #[test]
