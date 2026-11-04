@@ -352,6 +352,10 @@ jobs:
           jq --arg v "$VERSION" '.optionalDependencies |= with_entries(.value = $v)' npm/dnsm/package.json > tmp.json && mv tmp.json npm/dnsm/package.json
 
           cp README.md npm/dnsm/README.md
+          for pkg in npm/dnsm npm/linux-x64 npm/linux-arm64 npm/darwin-x64 npm/darwin-arm64; do
+            cp LICENSE "$pkg/LICENSE"
+            npm pack "./$pkg" --dry-run
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -578,9 +582,9 @@ jobs:
         run: |
           set -euxo pipefail
           for pkg in npm/linux-x64 npm/linux-arm64 npm/darwin-x64 npm/darwin-arm64; do
-            npm publish "$pkg" --access public
+            npm publish "./$pkg" --access public --provenance
           done
-          npm publish npm/dnsm --access public
+          npm publish ./npm/dnsm --access public --provenance
 
   # ── Docker multi-arch manifests ──
   docker-manifests:

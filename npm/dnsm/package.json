@@ -20,10 +20,22 @@
     "dnsm": "bin/dnsm",
     "dnsm-client": "bin/dnsm-client"
   },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
   "files": [
     "bin/dnsm",
     "bin/dnsm-client",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "optionalDependencies": {
     "@k-o-n-t-o-r/dnsm-linux-x64": "0.2.1",
