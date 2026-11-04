@@ -191,6 +191,11 @@ Options:
 
           [default: 300]
 
+      --mailbox-neg-ttl <SEC>
+          TTL for empty mailbox answers (default: 5)
+
+          [default: 5]
+
       --no-color
           Disable ANSI colors in stdout (pretty output is always on)
 

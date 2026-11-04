@@ -21,6 +21,7 @@ pub(crate) struct ServerCfg {
     mailbox_zone_labels: Option<Vec<String>>,
     ans_ttl: u32,
     neg_ttl: u32,
+    mailbox_neg_ttl: u32,
     pretty_stdout: bool,
     accept_ascii_only: bool,
     no_response: bool,
@@ -217,6 +218,10 @@ struct ServerArgs {
     #[arg(long = "neg-ttl", value_name = "SEC", default_value_t = 300)]
     neg_ttl: u32,
 
+    /// TTL for empty mailbox answers (default: 5)
+    #[arg(long = "mailbox-neg-ttl", value_name = "SEC", default_value_t = 5)]
+    mailbox_neg_ttl: u32,
+
     /// Disable ANSI colors in stdout (pretty output is always on)
     #[arg(long = "no-color")]
     no_color: bool,
@@ -337,6 +342,7 @@ fn main() -> std::io::Result<()> {
         max_total_assembly_bytes,
         ans_ttl,
         neg_ttl,
+        mailbox_neg_ttl,
         accept_ascii_only,
         no_response,
         max_decompressed_bytes,
@@ -441,6 +447,7 @@ fn main() -> std::io::Result<()> {
         mailbox_zone_labels,
         ans_ttl,
         neg_ttl,
+        mailbox_neg_ttl,
         pretty_stdout: true,
         accept_ascii_only,
         no_response,
@@ -911,7 +918,7 @@ fn main() -> std::io::Result<()> {
                             hdr,
                             q_end,
                             zone,
-                            cfg.neg_ttl,
+                            cfg.mailbox_neg_ttl,
                         )
                     } else {
                         // UDP budget: classic 480-ish bytes
@@ -965,6 +972,12 @@ fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mailbox_negative_ttl_defaults_to_five_seconds() {
+        let args = ServerArgs::try_parse_from(["dnsm-server", "x.example"]).unwrap();
+        assert_eq!(args.mailbox_neg_ttl, 5);
+    }
 
     #[test]
     fn deprecated_progress_option_remains_parseable() {

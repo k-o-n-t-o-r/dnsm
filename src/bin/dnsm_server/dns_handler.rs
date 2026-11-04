@@ -983,6 +983,7 @@ mod tests {
             mailbox_zone_labels: None,
             ans_ttl: 0,
             neg_ttl: 0,
+            mailbox_neg_ttl: 0,
             pretty_stdout: false,
             accept_ascii_only: false,
             no_response: false,

@@ -313,7 +313,7 @@ pub(crate) fn handle_tcp_mailbox_conn(
 
         let zone = cfg.mailbox_zone_labels.as_ref().unwrap();
         let mut resp = if page.messages.is_empty() {
-            build_negative_nodata_with_soa(&req, hdr, q_end, zone, cfg.neg_ttl)
+            build_negative_nodata_with_soa(&req, hdr, q_end, zone, cfg.mailbox_neg_ttl)
         } else {
             build_mailbox_txt_response(
                 &req,
