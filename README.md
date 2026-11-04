@@ -487,6 +487,8 @@ If you prefer building `dnsm` locally:
   - `ws-server` - enables the WebSocket/HTTP inbox
   - `python` - PyO3 bindings (used by `maturin`)
 
+Server-side DNS parsing and carrier decoding are available through the reusable `dnsm::server_protocol` module.
+
 
 
 

@@ -1,7 +1,7 @@
 use crate::ServerCfg;
-use crate::dns_handler::{
-    DNS_HEADER_LEN, DnsHeader, build_negative_nodata_with_soa, build_txt_rr_into, parse_header,
-    parse_question, read_u16, write_u16,
+use crate::dns_handler::{build_negative_nodata_with_soa, build_txt_rr_into};
+use dnsm::server_protocol::{
+    DNS_HEADER_LEN, DnsHeader, parse_header, parse_question, read_u16, strip_zone, write_u16,
 };
 use dnsm::{
     compute_message_id, parse_hex_bytes_exact, to_hex_lower, to_lower_labels,
@@ -286,7 +286,7 @@ pub(crate) fn handle_tcp_mailbox_conn(
     }
 
     let labels = to_lower_labels(&domain);
-    let mailbox_labels = match crate::dns_handler::strip_zone(&labels, &cfg.mailbox_zone_labels) {
+    let mailbox_labels = match strip_zone(&labels, &cfg.mailbox_zone_labels) {
         Some(v) => v,
         None => return Ok(()),
     };

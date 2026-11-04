@@ -19,6 +19,8 @@
 
 pub const PROTOCOL_VERSION: u8 = 3;
 
+pub mod server_protocol;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkHeader {
     pub version: u8,       // 3 bits [3:1]

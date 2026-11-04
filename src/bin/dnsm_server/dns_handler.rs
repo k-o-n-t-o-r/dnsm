@@ -1,80 +1,16 @@
 use console::style;
-use dnsm::{
-    ChunkHeader, PROTOCOL_VERSION, base32_nopad_decode, compute_message_id, compute_message_key48,
-    to_lower_labels,
+use dnsm::server_protocol::{CarrierDecodeError, DecodedCarrier};
+pub(crate) use dnsm::server_protocol::{
+    DNS_HEADER_LEN, DnsHeader, append_opt, has_edns, parse_header, parse_question, read_u16,
+    sanitize_domain_for_logging, strip_zone, validate_and_sanitize_domain, write_u16,
 };
+use dnsm::{PROTOCOL_VERSION, compute_message_id, compute_message_key48};
 use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::io::{BufWriter, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-pub(crate) const DNS_HEADER_LEN: usize = 12;
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DnsHeader {
-    pub(crate) id: u16,
-    pub(crate) flags: u16,
-}
-
-pub(crate) fn read_u16(be: &[u8]) -> u16 {
-    u16::from_be_bytes([be[0], be[1]])
-}
-
-pub(crate) fn write_u16(buf: &mut Vec<u8>, v: u16) {
-    buf.extend_from_slice(&v.to_be_bytes());
-}
-
-pub(crate) fn parse_header(pkt: &[u8]) -> Result<DnsHeader, ()> {
-    if pkt.len() < DNS_HEADER_LEN {
-        return Err(());
-    }
-    Ok(DnsHeader {
-        id: read_u16(&pkt[0..2]),
-        flags: read_u16(&pkt[2..4]),
-    })
-}
-
-/// Parses a single QNAME starting at offset 12 and returns (domain, next_offset_after_qclass).
-/// `next_offset` points just after QTYPE+QCLASS.
-pub(crate) fn parse_question(pkt: &[u8]) -> Result<(String, usize, u16, u16), ()> {
-    if pkt.len() < DNS_HEADER_LEN + 5 {
-        return Err(());
-    }
-    let mut off = DNS_HEADER_LEN;
-    let mut labels: Vec<String> = Vec::new();
-    loop {
-        if off >= pkt.len() {
-            return Err(());
-        }
-        let raw = pkt[off];
-        if raw & 0xC0 != 0 {
-            return Err(());
-        }
-        let len = raw as usize;
-        off += 1;
-        if len == 0 {
-            break;
-        }
-        if len > 63 || off + len > pkt.len() {
-            return Err(());
-        }
-        let label = std::str::from_utf8(&pkt[off..off + len]).map_err(|_| ())?;
-        if label.contains('.') {
-            return Err(());
-        }
-        labels.push(label.to_string());
-        off += len;
-    }
-    if off + 4 > pkt.len() {
-        return Err(());
-    }
-    let qtype = read_u16(&pkt[off..off + 2]);
-    let qclass = read_u16(&pkt[off + 2..off + 4]);
-    off += 4;
-    Ok((labels.join("."), off, qtype, qclass))
-}
 
 pub(crate) fn write_name(buf: &mut Vec<u8>, labels: &[String]) {
     for lab in labels {
@@ -226,172 +162,11 @@ pub(crate) fn json_escape(s: &str) -> String {
     out
 }
 
-pub(crate) fn strip_zone<'a>(
-    labels: &'a [String],
-    zone: &Option<Vec<String>>,
-) -> Option<&'a [String]> {
-    match zone {
-        None => None,
-        Some(z) => {
-            if labels.len() < z.len() {
-                return None;
-            }
-            let tail = &labels[labels.len() - z.len()..];
-            if tail == z.as_slice() {
-                let head = &labels[..labels.len() - z.len()];
-                if head.is_empty() { None } else { Some(head) }
-            } else {
-                None
-            }
-        }
-    }
-}
-
-pub(crate) fn has_edns(pkt: &[u8], q_end: usize) -> bool {
-    if pkt.len() < DNS_HEADER_LEN {
-        return false;
-    }
-    let arcount = read_u16(&pkt[10..12]);
-    if arcount == 0 {
-        return false;
-    }
-    let rrcount = read_u16(&pkt[6..8]) as usize + read_u16(&pkt[8..10]) as usize + arcount as usize;
-    let mut off = q_end;
-    for _ in 0..rrcount {
-        loop {
-            if off >= pkt.len() {
-                return false;
-            }
-            let b = pkt[off];
-            if b == 0 {
-                off += 1;
-                break;
-            } else if b & 0xC0 == 0xC0 {
-                off += 2;
-                break;
-            } else {
-                off += 1 + b as usize;
-            }
-        }
-        if off + 10 > pkt.len() {
-            return false;
-        }
-        let rtype = read_u16(&pkt[off..off + 2]);
-        if rtype == 41 {
-            return true;
-        }
-        let rdlen = read_u16(&pkt[off + 8..off + 10]) as usize;
-        off += 10 + rdlen;
-    }
-    false
-}
-
-pub(crate) fn append_opt(resp: &mut Vec<u8>, udp_payload_size: u16) {
-    resp.push(0x00);
-    write_u16(resp, 41);
-    write_u16(resp, udp_payload_size);
-    resp.extend_from_slice(&[0, 0, 0, 0]);
-    write_u16(resp, 0);
-    let ar = read_u16(&resp[10..12]);
-    let new_ar = ar.wrapping_add(1);
-    resp[10] = (new_ar >> 8) as u8;
-    resp[11] = (new_ar & 0xFF) as u8;
-}
-
 pub(crate) fn format_socket(addr: SocketAddr) -> String {
     match addr {
         SocketAddr::V4(v4) => format!("{}:{}", v4.ip(), v4.port()),
         SocketAddr::V6(v6) => format!("[{}]:{}", v6.ip(), v6.port()),
     }
-}
-
-/// Validate a domain for storage/logging; returns Ok(domain) or an error string.
-pub(crate) fn validate_and_sanitize_domain(domain: &str) -> Result<String, String> {
-    const MAX_DOMAIN_LENGTH: usize = 255;
-    const MAX_LABEL_LENGTH: usize = 63;
-    const MAX_LABEL_COUNT: usize = 127; // Reasonable limit for label count
-
-    if domain.is_empty() {
-        return Err("empty domain".to_string());
-    }
-
-    if domain.len() > MAX_DOMAIN_LENGTH {
-        return Err(format!(
-            "domain too long ({} bytes, max {})",
-            domain.len(),
-            MAX_DOMAIN_LENGTH
-        ));
-    }
-
-    let labels: Vec<&str> = domain.split('.').collect();
-
-    if labels.len() > MAX_LABEL_COUNT {
-        return Err(format!(
-            "too many labels ({}, max {})",
-            labels.len(),
-            MAX_LABEL_COUNT
-        ));
-    }
-
-    for (idx, label) in labels.iter().enumerate() {
-        if label.is_empty() {
-            if idx != labels.len() - 1 {
-                return Err(format!("empty label at position {}", idx));
-            }
-            continue;
-        }
-
-        if label.len() > MAX_LABEL_LENGTH {
-            return Err(format!(
-                "label '{}' too long ({} bytes, max {})",
-                label,
-                label.len(),
-                MAX_LABEL_LENGTH
-            ));
-        }
-
-        for (char_idx, ch) in label.chars().enumerate() {
-            if !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' {
-                if ch.is_control() {
-                    return Err(format!("control character (0x{:02x}) in label", ch as u32));
-                } else {
-                    return Err(format!("invalid character '{}' in label", ch));
-                }
-            }
-            if ch == '-' && (char_idx == 0 || char_idx == label.len() - 1) {
-                return Err("label cannot start/end with hyphen".to_string());
-            }
-        }
-    }
-
-    Ok(domain.to_string())
-}
-
-/// Sanitize a domain for logs (replace controls/non-ASCII, clamp length).
-pub(crate) fn sanitize_domain_for_logging(domain: &str) -> String {
-    const MAX_LOG_LENGTH: usize = 255;
-
-    let truncated = if domain.len() > MAX_LOG_LENGTH {
-        match domain.get(..MAX_LOG_LENGTH) {
-            Some(s) => s,
-            None => &domain[..domain.floor_char_boundary(MAX_LOG_LENGTH)],
-        }
-    } else {
-        domain
-    };
-
-    truncated
-        .chars()
-        .map(|ch| {
-            if ch.is_control() {
-                '?'
-            } else if ch.is_ascii() {
-                ch
-            } else {
-                '?'
-            }
-        })
-        .collect()
 }
 
 fn decompress_lzma_mem(input: &[u8], max_bytes: u32) -> Result<Vec<u8>, String> {
@@ -492,6 +267,7 @@ fn finish_assembly(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_handle_dnsm(
     full_domain: &str,
+    decoded: &Result<DecodedCarrier, CarrierDecodeError>,
     cfg: &crate::ServerCfg,
     assemblies: &mut HashMap<u64, crate::Assembly>,
     total_assembly_chunks: &mut usize,
@@ -502,124 +278,81 @@ pub(crate) fn try_handle_dnsm(
     db: &Connection,
     qtype: u16,
 ) {
-    let labels = to_lower_labels(full_domain);
-    let data_labels = match strip_zone(&labels, &cfg.zone_labels) {
-        None => return,
-        Some(labels_in_zone) => labels_in_zone,
-    };
-
-    let mut b32 = String::with_capacity(data_labels.iter().map(|s| s.len()).sum());
-    for (idx, lab) in data_labels.iter().enumerate() {
-        if !lab
-            .chars()
-            .all(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '2'..='7' | '='))
-        {
+    let decoded = match decoded {
+        Ok(decoded) => decoded,
+        Err(CarrierDecodeError::OutsideZone) => return,
+        Err(CarrierDecodeError::InvalidLabel { index, label }) => {
             let _ = writeln!(
                 log,
                 "{{\"ts\":{},\"event\":\"parse_error\",\"label_index\":{},\"label\":\"{}\",\"domain\":\"{}\",\"peer\":\"{}\"}}",
                 now,
-                idx,
-                json_escape(lab),
+                index,
+                json_escape(label),
                 json_escape(full_domain),
                 json_escape(&format_socket(peer))
             );
             let _ = log.flush();
             if cfg.pretty_stdout {
-                let err = style(format!(
-                    "[ERR] parse_error label#{} '{}' domain={} peer={}",
-                    idx,
-                    lab,
-                    full_domain,
-                    format_socket(peer)
-                ))
-                .red()
-                .bold();
-                println!("{}", err);
+                println!(
+                    "{}",
+                    style(format!(
+                        "[ERR] parse_error label#{} '{}' domain={} peer={}",
+                        index,
+                        label,
+                        full_domain,
+                        format_socket(peer)
+                    ))
+                    .red()
+                    .bold()
+                );
             }
             return;
         }
-        b32.push_str(lab);
-    }
-
-    let bytes = match base32_nopad_decode(&b32) {
-        Some(v) => v,
-        None => {
+        Err(error) => {
             let _ = writeln!(
                 log,
-                "{{\"ts\":{},\"event\":\"decode_error\",\"reason\":\"invalid_base32\",\"domain\":\"{}\",\"chars\":{},\"labels\":{},\"peer\":\"{}\"}}",
+                "{{\"ts\":{},\"event\":\"decode_error\",\"reason\":\"{}\",\"domain\":\"{}\",\"peer\":\"{}\"}}",
                 now,
+                error.code(),
                 json_escape(full_domain),
-                b32.len(),
-                data_labels.len(),
                 json_escape(&format_socket(peer))
             );
             let _ = log.flush();
             if cfg.pretty_stdout {
-                let line = style(format!(
-                    "[ERR] decode_error invalid_base32 domain={} chars={} labels={} peer={}",
-                    full_domain,
-                    b32.len(),
-                    data_labels.len(),
-                    format_socket(peer)
-                ))
-                .red();
-                println!("{}", line);
+                println!(
+                    "{}",
+                    style(format!(
+                        "[ERR] decode_error {} domain={} peer={}",
+                        error.code(),
+                        full_domain,
+                        format_socket(peer)
+                    ))
+                    .red()
+                );
             }
             return;
         }
     };
 
-    if bytes.is_empty() {
-        let _ = writeln!(
-            log,
-            "{{\"ts\":{},\"event\":\"decode_error\",\"reason\":\"short_bytes\",\"len\":{},\"domain\":\"{}\",\"peer\":\"{}\"}}",
-            now,
-            bytes.len(),
-            json_escape(full_domain),
-            json_escape(&format_socket(peer))
-        );
-        let _ = log.flush();
-        if cfg.pretty_stdout {
-            let line = style(format!(
-                "[ERR] decode_error short_bytes len={} domain={} peer={}",
-                bytes.len(),
-                full_domain,
-                format_socket(peer)
-            ))
-            .red();
-            println!("{}", line);
-        }
-        return;
-    }
-
-    let (header, hdr_len) = match ChunkHeader::from_bytes(&bytes) {
-        Some(v) => v,
-        None => return,
-    };
+    let bytes = &decoded.bytes;
+    let header = decoded.header;
     if header.version != PROTOCOL_VERSION {
         return;
     }
-    let mut offset = hdr_len;
-    let mut mailbox: Option<u64> = None;
-    let mut message_key: u64 = 0;
+    let offset = decoded.payload_offset;
+    let mailbox = decoded.mailbox;
+    let message_key = decoded.message_key.unwrap_or(0);
 
     // --- Ping handling ---
     if header.is_ping {
-        if !header.has_mailbox {
-            return; // ping without mailbox is invalid
-        }
-        if bytes.len() < offset + 6 {
-            return;
-        }
-        let mut mb = [0u8; 8];
-        mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-        let mbox = u64::from_be_bytes(mb) & 0x0000_FFFF_FFFF_FFFF;
+        let mbox = mailbox.expect("carrier decoder validates ping mailbox");
         let mbox_hex = format!("{:012x}", mbox);
+        let mailbox_bytes = mbox.to_be_bytes();
 
         // Compute ping-specific message_id: BLAKE3("ping" || mailbox || peer_ip || now_ms)
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"ping");
-        hasher.update(&mb[2..8]);
+        hasher.update(&mailbox_bytes[2..8]);
         hasher.update(peer.ip().to_string().as_bytes());
         hasher.update(&(now as u64).to_be_bytes());
         let hash = hasher.finalize();
@@ -672,38 +405,6 @@ pub(crate) fn try_handle_dnsm(
         return;
     }
 
-    // --- Normal message header field extraction ---
-    if !header.chunked {
-        // Single-chunk message
-        if header.has_mailbox {
-            if bytes.len() < offset + 6 {
-                return;
-            }
-            let mut mb = [0u8; 8];
-            mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-            mailbox = Some(u64::from_be_bytes(mb));
-            offset += 6;
-        }
-    } else {
-        // Multi-chunk message: msg_id48 always present
-        if bytes.len() < offset + 6 {
-            return;
-        }
-        let mut mid = [0u8; 8];
-        mid[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-        message_key = u64::from_be_bytes(mid);
-        offset += 6;
-        if header.is_first && header.has_mailbox {
-            if bytes.len() < offset + 6 {
-                return;
-            }
-            let mut mb = [0u8; 8];
-            mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-            mailbox = Some(u64::from_be_bytes(mb));
-            offset += 6;
-        }
-    }
-
     let data_len = bytes.len().saturating_sub(offset);
 
     let _ = writeln!(
@@ -715,7 +416,7 @@ pub(crate) fn try_handle_dnsm(
         if header.is_first { 1 } else { 0 },
         header.remaining,
         data_len,
-        data_labels.len(),
+        decoded.data_labels,
         json_escape(&format_socket(peer))
     );
     let _ = log.flush();
@@ -755,7 +456,7 @@ pub(crate) fn try_handle_dnsm(
             last_tag,
             style(format!("{}", header.remaining)).magenta(),
             style(format!("{}", data_len)).green(),
-            style(format!("{}", data_labels.len())).dim(),
+            style(format!("{}", decoded.data_labels)).dim(),
             mbox_tag,
             style(format_socket(peer)).magenta(),
             style(qtype_str).dim()

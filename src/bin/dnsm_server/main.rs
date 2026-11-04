@@ -1,9 +1,7 @@
 use clap::Parser;
 use console::style;
-use dnsm::{
-    ChunkHeader, base32_nopad_decode, to_lower_labels, validate_mailbox_hex12,
-    validate_zone_and_labels,
-};
+use dnsm::server_protocol::{CarrierDecodeError, decode_carrier_domain};
+use dnsm::{to_lower_labels, validate_mailbox_hex12, validate_zone_and_labels};
 use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -623,66 +621,30 @@ fn main() -> std::io::Result<()> {
             mailbox_hex = Some(stripped[0].clone());
         }
 
-        if in_zone
-            && !is_human_ping
-            && let Some(labels_in_zone) = dns_handler::strip_zone(&labels, &cfg.zone_labels)
-        {
-            let mut b32 = String::with_capacity(labels_in_zone.iter().map(|s| s.len()).sum());
-            for lab in labels_in_zone.iter() {
-                b32.push_str(lab);
-            }
-            base32_chars = Some(b32.len() as i64);
-            data_labels = Some(labels_in_zone.len() as i64);
-            if let Some(bytes) = base32_nopad_decode(&b32) {
-                if let Some((ch, hdr_len)) = ChunkHeader::from_bytes(&bytes) {
-                    chunk_first = Some(if ch.is_first { 1 } else { 0 });
-                    chunk_remaining = Some(ch.remaining as i64);
-                    chunk_version = Some(ch.version as i64);
-                    let mut offset = hdr_len;
-                    let mut message_key: u64 = 0;
-                    if ch.is_ping {
-                        // Ping: just mailbox after flags byte
-                        if ch.has_mailbox && bytes.len() >= offset + 6 {
-                            let mut mb = [0u8; 8];
-                            mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-                            let m = u64::from_be_bytes(mb);
-                            mailbox_hex = Some(format!("{:012x}", m & 0x0000_FFFF_FFFF_FFFF));
-                            offset += 6;
-                        }
-                    } else if !ch.chunked {
-                        // Single-chunk: optional mailbox
-                        if ch.has_mailbox && bytes.len() >= offset + 6 {
-                            let mut mb = [0u8; 8];
-                            mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-                            let m = u64::from_be_bytes(mb);
-                            mailbox_hex = Some(format!("{:012x}", m & 0x0000_FFFF_FFFF_FFFF));
-                            offset += 6;
-                        }
-                    } else {
-                        // Multi-chunk: msg_id48 + optional mailbox on first
-                        if bytes.len() >= offset + 6 {
-                            let mut mid = [0u8; 8];
-                            mid[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-                            message_key = u64::from_be_bytes(mid);
-                            offset += 6;
-                        }
-                        if ch.is_first && ch.has_mailbox && bytes.len() >= offset + 6 {
-                            let mut mb = [0u8; 8];
-                            mb[2..8].copy_from_slice(&bytes[offset..offset + 6]);
-                            let m = u64::from_be_bytes(mb);
-                            mailbox_hex = Some(format!("{:012x}", m & 0x0000_FFFF_FFFF_FFFF));
-                            offset += 6;
-                        }
-                    }
-                    data_len = Some(bytes.len().saturating_sub(offset) as i64);
-                    if message_key != 0 {
-                        message_key_i64 = Some(message_key as i64);
-                    }
-                } else {
-                    decode_error = Some("short_bytes".to_string());
+        let decoded_carrier = if in_zone && !is_human_ping {
+            Some(decode_carrier_domain(&domain_for_db, &cfg.zone_labels))
+        } else {
+            None
+        };
+        if let Some(result) = decoded_carrier.as_ref() {
+            match result {
+                Ok(decoded) => {
+                    base32_chars = Some(decoded.base32_chars as i64);
+                    data_labels = Some(decoded.data_labels as i64);
+                    chunk_first = Some(i64::from(decoded.header.is_first));
+                    chunk_remaining = Some(decoded.header.remaining as i64);
+                    chunk_version = Some(decoded.header.version as i64);
+                    data_len = Some(decoded.payload().len() as i64);
+                    mailbox_hex = decoded
+                        .mailbox
+                        .map(|mailbox| format!("{:012x}", mailbox & 0x0000_FFFF_FFFF_FFFF));
+                    message_key_i64 = decoded
+                        .message_key
+                        .filter(|key| *key != 0)
+                        .map(|key| key as i64);
                 }
-            } else {
-                decode_error = Some("invalid_base32".to_string());
+                Err(CarrierDecodeError::OutsideZone) => {}
+                Err(error) => decode_error = Some(error.code().to_string()),
             }
         }
 
@@ -732,35 +694,14 @@ fn main() -> std::io::Result<()> {
             if is_human_ping {
                 // Human-ping pretty output is printed by the handler below.
             } else if in_zone {
-                // Decode the header from the in-zone dnsm query and show a concise summary
-                if let Some(labels_in_zone) = dns_handler::strip_zone(&labels, &cfg.zone_labels) {
-                    let mut b32 =
-                        String::with_capacity(labels_in_zone.iter().map(|s| s.len()).sum());
-                    for lab in labels_in_zone {
-                        b32.push_str(lab);
-                    }
-                    if let Some(bytes) = base32_nopad_decode(&b32) {
-                        if ChunkHeader::from_bytes(&bytes).is_some() {
-                            // Decoded successfully; try_handle_dnsm will print [CHUNK] or [PING].
-                            // Do not print an extra [QUERY] line.
-                        } else {
-                            println!(
-                                "{} {} {} {}",
-                                style("[QUERY]").cyan().bold(),
-                                style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
-                                style(dns_handler::format_socket(peer)).magenta(),
-                                style("[ERR short_bytes]").red()
-                            );
-                        }
-                    } else {
-                        println!(
-                            "{} {} {} {}",
-                            style("[QUERY]").cyan().bold(),
-                            style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
-                            style(dns_handler::format_socket(peer)).magenta(),
-                            style("[ERR invalid_base32]").red()
-                        );
-                    }
+                if let Some(Err(error)) = decoded_carrier.as_ref() {
+                    println!(
+                        "{} {} {} {}",
+                        style("[QUERY]").cyan().bold(),
+                        style(format!("[{}]", dns_handler::format_ts_utc(ts))).dim(),
+                        style(dns_handler::format_socket(peer)).magenta(),
+                        style(format!("[ERR {}]", error.code())).red()
+                    );
                 }
             } else if in_mbox_zone {
                 println!(
@@ -876,11 +817,15 @@ fn main() -> std::io::Result<()> {
         // Try to parse dnsm chunk when zone is configured
         // No tagged-log output anymore; file logs are JSON-only.
 
-        if cfg.zone_labels.is_some() && !is_human_ping && (qtype == 1 || qtype == 28) {
+        if let Some(decoded) = decoded_carrier.as_ref()
+            && !is_human_ping
+            && (qtype == 1 || qtype == 28)
+        {
             // Only process A/AAAA queries as data carriers; NS and other
             // query types from resolvers are not dnsm chunks.
             dns_handler::try_handle_dnsm(
                 &domain_for_db,
+                decoded,
                 &cfg,
                 &mut assemblies,
                 &mut assembly_chunks,
