@@ -4,7 +4,7 @@ pub(crate) use dnsm::server_protocol::{
     DNS_HEADER_LEN, DnsHeader, append_opt, has_edns, parse_header, parse_question, read_u16,
     sanitize_domain_for_logging, strip_zone, validate_and_sanitize_domain, write_u16,
 };
-use dnsm::{PROTOCOL_VERSION, compute_message_id, compute_message_key48};
+use dnsm::{PROTOCOL_VERSION, compute_message_id, compute_message_key48, compute_message_key48_v3};
 use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
@@ -698,6 +698,26 @@ pub(crate) fn try_handle_dnsm(
                     return;
                 }
             };
+            let expected_key = compute_message_key48_v3(&data, sess.mailbox);
+            if expected_key != sid {
+                let _ = writeln!(
+                    log,
+                    "{{\"ts\":{},\"event\":\"reject\",\"reason\":\"message_key_mismatch\",\"key\":{},\"expected\":{}}}",
+                    now, sid, expected_key
+                );
+                let _ = log.flush();
+                if cfg.pretty_stdout {
+                    println!(
+                        "{} {} reason=message_key_mismatch key={} expected={}",
+                        style("[REJECT]").red().bold(),
+                        style(format!("[{}]", format_ts_utc(now))).dim(),
+                        sid,
+                        expected_key
+                    );
+                }
+                finish_assembly(sess, total_assembly_chunks, total_assembly_bytes);
+                return;
+            }
             if cfg.accept_ascii_only && !data.iter().all(|b| *b < 0x80) {
                 let sid = compute_message_key48(&data);
                 let _ = writeln!(

@@ -237,6 +237,14 @@ fn multi_chunk_key_differs_by_mailbox() {
     let (domains_b, info_b) = build_domains_for_data(&big, zone, &mb_b).unwrap();
     assert!(info_a.total_chunks > 1);
     assert!(info_b.total_chunks > 1);
+    assert_eq!(
+        info_a.msg_id48,
+        Some(compute_message_key48_v3(&big, mb_a.mailbox))
+    );
+    assert_eq!(
+        info_b.msg_id48,
+        Some(compute_message_key48_v3(&big, mb_b.mailbox))
+    );
     assert_ne!(
         info_a.msg_id48, info_b.msg_id48,
         "same payload with different mailboxes must have different msg_id48"
