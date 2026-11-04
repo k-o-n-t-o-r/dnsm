@@ -142,6 +142,17 @@ pub(crate) fn ensure_schema(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch(SCHEMA_SQL)
 }
 
+pub(crate) fn purge_queries_older_than(
+    db: &Connection,
+    cutoff_timestamp_ms: i64,
+) -> rusqlite::Result<usize> {
+    let deleted = db.execute("DELETE FROM queries WHERE ts < ?1", [cutoff_timestamp_ms])?;
+    if deleted > 0 {
+        let _ = db.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+    }
+    Ok(deleted)
+}
+
 pub(crate) fn run_migrations(db: &Connection) -> rusqlite::Result<()> {
     let has_peer_ip: bool = db
         .prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name='peer_ip'")?
@@ -165,4 +176,28 @@ pub(crate) fn run_migrations(db: &Connection) -> rusqlite::Result<()> {
          CREATE INDEX IF NOT EXISTS idx_messages_mailbox_id ON messages(mailbox, id);",
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_retention_removes_only_expired_rows() {
+        let db = Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+        for timestamp in [100_i64, 200, 300] {
+            db.execute(
+                "INSERT INTO queries (ts, peer_ip, peer_port, domain, qtype, qclass, opcode, flags, in_zone, in_mailbox_zone) VALUES (?1, '127.0.0.1', 53, 'x.example', 1, 1, 0, 0, 0, 0)",
+                [timestamp],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(purge_queries_older_than(&db, 250).unwrap(), 2);
+        let remaining: i64 = db
+            .query_row("SELECT COUNT(*) FROM queries", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1);
+    }
 }

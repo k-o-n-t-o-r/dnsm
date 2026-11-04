@@ -1,9 +1,9 @@
 use std::{
-    collections::HashSet,
-    net::SocketAddr,
+    collections::{HashMap, HashSet},
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use base64::Engine;
@@ -36,6 +36,14 @@ struct Args {
     #[arg(long = "poll-ms", default_value_t = 1000, value_parser = clap::value_parser!(u64).range(1..))]
     poll_ms: u64,
 
+    /// Maximum HTTP and WebSocket upgrade requests per minute per IP. Set to 0 to disable.
+    #[arg(long = "requests-per-minute", default_value_t = 120)]
+    requests_per_minute: u32,
+
+    /// Maximum concurrent WebSocket connections per IP. Set to 0 to disable.
+    #[arg(long = "max-ws-connections-per-ip", default_value_t = 8)]
+    max_ws_connections_per_ip: u32,
+
     /// Allow cross-origin requests from any origin
     #[arg(long = "allow-all-origins")]
     allow_all_origins: bool,
@@ -46,6 +54,98 @@ struct AppState {
     db_path: Arc<PathBuf>,
     poll_every: Duration,
     shutdown: Arc<Notify>,
+    traffic: Arc<Mutex<TrafficLimiter>>,
+}
+
+struct TrafficEntry {
+    window_start: Instant,
+    requests: u32,
+    active_websockets: u32,
+    last_seen: Instant,
+}
+
+struct TrafficLimiter {
+    clients: HashMap<IpAddr, TrafficEntry>,
+    requests_per_minute: u32,
+    max_websockets_per_ip: u32,
+    last_cleanup: Instant,
+}
+
+impl TrafficLimiter {
+    fn new(requests_per_minute: u32, max_websockets_per_ip: u32) -> Self {
+        Self {
+            clients: HashMap::new(),
+            requests_per_minute,
+            max_websockets_per_ip,
+            last_cleanup: Instant::now(),
+        }
+    }
+
+    fn cleanup(&mut self, now: Instant) {
+        const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+        const MAX_IDLE: Duration = Duration::from_secs(120);
+        if now.saturating_duration_since(self.last_cleanup) < CLEANUP_INTERVAL {
+            return;
+        }
+        self.clients.retain(|_, entry| {
+            entry.active_websockets > 0 || now.saturating_duration_since(entry.last_seen) < MAX_IDLE
+        });
+        self.last_cleanup = now;
+    }
+
+    fn check_request(&mut self, ip: IpAddr, now: Instant) -> bool {
+        const WINDOW: Duration = Duration::from_secs(60);
+        self.cleanup(now);
+        let entry = self.clients.entry(ip).or_insert(TrafficEntry {
+            window_start: now,
+            requests: 0,
+            active_websockets: 0,
+            last_seen: now,
+        });
+        entry.last_seen = now;
+        if now.saturating_duration_since(entry.window_start) >= WINDOW {
+            entry.window_start = now;
+            entry.requests = 0;
+        }
+        if self.requests_per_minute > 0 && entry.requests >= self.requests_per_minute {
+            return false;
+        }
+        entry.requests = entry.requests.saturating_add(1);
+        true
+    }
+
+    fn acquire_websocket(&mut self, ip: IpAddr, now: Instant) -> bool {
+        if !self.check_request(ip, now) {
+            return false;
+        }
+        let entry = self.clients.get_mut(&ip).expect("request entry exists");
+        if self.max_websockets_per_ip > 0 && entry.active_websockets >= self.max_websockets_per_ip {
+            return false;
+        }
+        entry.active_websockets = entry.active_websockets.saturating_add(1);
+        true
+    }
+
+    fn release_websocket(&mut self, ip: IpAddr) {
+        if let Some(entry) = self.clients.get_mut(&ip) {
+            entry.active_websockets = entry.active_websockets.saturating_sub(1);
+            entry.last_seen = Instant::now();
+        }
+    }
+}
+
+struct WebSocketPermit {
+    traffic: Arc<Mutex<TrafficLimiter>>,
+    ip: IpAddr,
+}
+
+impl Drop for WebSocketPermit {
+    fn drop(&mut self) {
+        self.traffic
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .release_websocket(self.ip);
+    }
 }
 
 const MAX_HISTORY_MESSAGES: usize = 1_000;
@@ -75,6 +175,50 @@ struct HistoryPage {
 #[derive(Debug, Default, Deserialize)]
 struct WsQuery {
     after_id: Option<i64>,
+}
+
+fn rate_limited_response() -> warp::reply::Response {
+    warp::reply::with_header(
+        warp::reply::with_status(
+            warp::reply::json(&serde_json::json!({"error": "rate_limited"})),
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
+        "retry-after",
+        "60",
+    )
+    .into_response()
+}
+
+fn request_allowed(state: &AppState, remote: Option<SocketAddr>) -> bool {
+    let Some(ip) = remote.map(|addr| addr.ip()) else {
+        return true;
+    };
+    state
+        .traffic
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .check_request(ip, Instant::now())
+}
+
+fn acquire_websocket_permit(
+    state: &AppState,
+    remote: Option<SocketAddr>,
+) -> Result<Option<WebSocketPermit>, ()> {
+    let Some(ip) = remote.map(|addr| addr.ip()) else {
+        return Ok(None);
+    };
+    let mut traffic = state
+        .traffic
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !traffic.acquire_websocket(ip, Instant::now()) {
+        return Err(());
+    }
+    drop(traffic);
+    Ok(Some(WebSocketPermit {
+        traffic: state.traffic.clone(),
+        ip,
+    }))
 }
 
 fn open_readonly_db<P: AsRef<Path>>(p: P) -> rusqlite::Result<Connection> {
@@ -255,7 +399,11 @@ fn initial_last_id(
 async fn handle_list_messages(
     state: AppState,
     mailbox: String,
+    remote: Option<SocketAddr>,
 ) -> Result<warp::reply::Response, Rejection> {
+    if !request_allowed(&state, remote) {
+        return Ok(rate_limited_response());
+    }
     let response = if let Some(mb) = validate_mailbox_hex12(&mailbox) {
         match open_readonly_db(&*state.db_path).and_then(|db| fetch_all_messages(&db, &mb)) {
             Ok(page) => warp::reply::with_status(
@@ -293,11 +441,16 @@ async fn handle_ws(
     state: AppState,
     mailbox: String,
     query: WsQuery,
+    remote: Option<SocketAddr>,
     ws: ws::Ws,
-) -> Result<impl Reply, Rejection> {
+) -> Result<warp::reply::Response, Rejection> {
+    let permit = match acquire_websocket_permit(&state, remote) {
+        Ok(permit) => permit,
+        Err(()) => return Ok(rate_limited_response()),
+    };
     if let Some(mb) = validate_mailbox_hex12(&mailbox) {
         let resp = ws
-            .on_upgrade(move |socket| ws_session(state, mb, query.after_id, socket))
+            .on_upgrade(move |socket| ws_session(state, mb, query.after_id, permit, socket))
             .into_response();
         Ok(resp)
     } else {
@@ -313,6 +466,7 @@ async fn ws_session(
     state: AppState,
     mailbox_hex: String,
     requested_after_id: Option<i64>,
+    _permit: Option<WebSocketPermit>,
     ws: ws::WebSocket,
 ) {
     let (mut ws_tx, mut ws_rx) = ws.split();
@@ -406,12 +560,18 @@ async fn main() {
         bind,
         db_path,
         poll_ms,
+        requests_per_minute,
+        max_ws_connections_per_ip,
         allow_all_origins,
     } = Args::parse();
     let state = AppState {
         db_path: Arc::new(db_path),
         poll_every: Duration::from_millis(poll_ms),
         shutdown: Arc::new(Notify::new()),
+        traffic: Arc::new(Mutex::new(TrafficLimiter::new(
+            requests_per_minute,
+            max_ws_connections_per_ip,
+        ))),
     };
 
     // Basic health endpoint
@@ -421,20 +581,24 @@ async fn main() {
     let api_state = state.clone();
     let list_route = warp::path!("api" / "mailbox" / String / "messages")
         .and(warp::get())
-        .and_then(move |mailbox: String| {
+        .and(warp::addr::remote())
+        .and_then(move |mailbox: String, remote: Option<SocketAddr>| {
             let st = api_state.clone();
-            async move { handle_list_messages(st, mailbox).await }
+            async move { handle_list_messages(st, mailbox, remote).await }
         });
 
     // WS /ws/{mailbox}
     let ws_state = state.clone();
     let ws_route = warp::path!("ws" / String)
         .and(warp::query::<WsQuery>())
+        .and(warp::addr::remote())
         .and(warp::ws())
-        .and_then(move |mailbox: String, query: WsQuery, ws: ws::Ws| {
-            let st = ws_state.clone();
-            async move { handle_ws(st, mailbox, query, ws).await }
-        });
+        .and_then(
+            move |mailbox: String, query: WsQuery, remote: Option<SocketAddr>, ws: ws::Ws| {
+                let st = ws_state.clone();
+                async move { handle_ws(st, mailbox, query, remote, ws).await }
+            },
+        );
 
     // CORS
     let cors = if allow_all_origins {
@@ -480,6 +644,30 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    #[test]
+    fn request_rate_limit_resets_after_one_minute() {
+        let ip = IpAddr::from([192, 0, 2, 1]);
+        let start = Instant::now();
+        let mut limiter = TrafficLimiter::new(2, 1);
+
+        assert!(limiter.check_request(ip, start));
+        assert!(limiter.check_request(ip, start));
+        assert!(!limiter.check_request(ip, start));
+        assert!(limiter.check_request(ip, start + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn websocket_limit_is_released() {
+        let ip = IpAddr::from([192, 0, 2, 1]);
+        let start = Instant::now();
+        let mut limiter = TrafficLimiter::new(0, 1);
+
+        assert!(limiter.acquire_websocket(ip, start));
+        assert!(!limiter.acquire_websocket(ip, start));
+        limiter.release_websocket(ip);
+        assert!(limiter.acquire_websocket(ip, start));
     }
 
     #[test]

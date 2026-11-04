@@ -92,7 +92,7 @@ The protocol: inputs are LZMA-compressed, framed with headers, split into ordere
 
 The client also runs in browsers via WebAssembly. Depending on how you trigger resolution, lookups don't show up in browser DevTools and are invisible to users. Most traffic inspection tools (`mitmproxy`, `Fiddler`, `Burp`) don't capture DNS by default. Try [our browser test](https://dnsm.re/#/browser-test) to validate this.
 
-Inbox history payloads are capped at 1,000 messages and 16 MiB per response. Truncated responses include the `X-DNSM-History-Truncated: true` header, while the WebSocket cursor delivers messages that arrive between the history request and live connection.
+Inbox history payloads are capped at 1,000 messages and 16 MiB per response. Truncated responses include the `X-DNSM-History-Truncated: true` header, while the WebSocket cursor delivers messages that arrive between the history request and live connection. The gateway defaults to 120 HTTP/WebSocket upgrades per minute and eight concurrent WebSockets per source IP; use `--requests-per-minute` and `--max-ws-connections-per-ip` to tune or disable those limits.
 
 See [Privacy-Preserving Data Transmission](#privacy-preserving-data-transmission) for a white-hat use case.
 
@@ -146,6 +146,11 @@ Options:
           Path to a SQLite database for persistence (messages table is auto-created)
 
           [default: dnsm.db]
+
+      --query-retention-days <DAYS>
+          Delete query-log rows older than this many days. Set to 0 to disable retention.
+
+          [default: 30]
 
       --gc-ms <MS>
           Garbage-collect inactive assemblies older than this many ms (default: 30000ms = 30s)

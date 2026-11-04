@@ -45,6 +45,8 @@ struct RateLimiter {
 const MAX_RATE_LIMIT_ENTRIES: usize = 100_000;
 const RATE_LIMIT_ENTRY_MAX_AGE_MS: u128 = 60_000;
 const RATE_LIMIT_CLEANUP_INTERVAL_MS: u128 = 1_000;
+const QUERY_RETENTION_MAINTENANCE_MS: u128 = 60 * 60 * 1_000;
+const MILLIS_PER_DAY: u128 = 24 * 60 * 60 * 1_000;
 
 struct QueryWindow {
     count: u32,
@@ -146,6 +148,14 @@ struct ServerArgs {
     /// Path to a SQLite database for persistence (messages table is auto-created)
     #[arg(long = "db", value_name = "PATH", default_value = "dnsm.db")]
     db_path: PathBuf,
+
+    /// Delete query-log rows older than this many days. Set to 0 to disable retention.
+    #[arg(
+        long = "query-retention-days",
+        value_name = "DAYS",
+        default_value_t = 30
+    )]
+    query_retention_days: u32,
 
     /// Deprecated no-op retained for command-line compatibility
     #[arg(
@@ -320,6 +330,7 @@ fn main() -> std::io::Result<()> {
         fixed_ip_str,
         log_path,
         db_path,
+        query_retention_days,
         gc_ms,
         max_assemblies,
         max_assembly_chunks,
@@ -406,6 +417,19 @@ fn main() -> std::io::Result<()> {
         eprintln!("failed to run db migrations: {}", e);
         std::process::exit(2);
     }
+
+    let query_retention_ms = (query_retention_days > 0)
+        .then(|| u128::from(query_retention_days).saturating_mul(MILLIS_PER_DAY));
+    let maintenance_now = dns_handler::now_millis();
+    if let Some(retention_ms) = query_retention_ms {
+        let cutoff = maintenance_now
+            .saturating_sub(retention_ms)
+            .min(i64::MAX as u128) as i64;
+        if let Err(e) = storage::purge_queries_older_than(&db, cutoff) {
+            eprintln!("failed to purge expired query rows: {}", e);
+        }
+    }
+    let mut next_query_maintenance = maintenance_now.saturating_add(QUERY_RETENTION_MAINTENANCE_MS);
 
     // Force-enable ANSI colors even when stdout isn't a TTY (e.g. under
     // `docker logs`). Honor NO_COLOR=1 for users who opt out explicitly.
@@ -497,6 +521,16 @@ fn main() -> std::io::Result<()> {
         };
 
         let ts = dns_handler::now_millis();
+
+        if let Some(retention_ms) = query_retention_ms
+            && ts >= next_query_maintenance
+        {
+            let cutoff = ts.saturating_sub(retention_ms).min(i64::MAX as u128) as i64;
+            if let Err(e) = storage::purge_queries_older_than(&db, cutoff) {
+                eprintln!("failed to purge expired query rows: {}", e);
+            }
+            next_query_maintenance = ts.saturating_add(QUERY_RETENTION_MAINTENANCE_MS);
+        }
 
         if let Some(ref mut limiter) = rate_limiter
             && !limiter.check_and_update(peer.ip(), ts)
