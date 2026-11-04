@@ -112,7 +112,7 @@ jobs:
 
       - name: Install cargo-zigbuild
         if: matrix.cross
-        run: cargo install cargo-zigbuild@0.22.3 --locked
+        run: cargo install cargo-zigbuild@0.24.1 --locked
 
       - name: Build
         shell: bash
