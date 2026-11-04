@@ -88,6 +88,16 @@ Many environments block outbound TCP/HTTP but leave DNS resolution untouched -- 
 
 The protocol: inputs are LZMA-compressed, framed with headers, split into ordered chunks, and base32-encoded into valid hostname labels. Optional mailboxes provide inbox-style retrieval and multiplexing across messages and senders.
 
+## Security Model
+
+- A mailbox ID is a bearer credential. Anyone who learns its 12 hexadecimal characters can read that mailbox; there is no account or password layer.
+- Payloads are compressed and encoded, not encrypted. DNS resolvers, network operators, and the authoritative server can observe the transmitted names and recover their contents.
+- The protocol verifies multi-chunk integrity but does not authenticate the sender. Use a separate encryption or authentication layer when the payload requires confidentiality or sender identity.
+- Messages are deduplicated by content within a mailbox. Sending identical payload bytes to the same mailbox again does not create a second stored message.
+- The browser test intentionally loads resources, including scripts, from generated test domains. Run it only against infrastructure you control.
+
+Use dnsm only on systems and networks where you have explicit authorization.
+
 ### Browsers
 
 The client also runs in browsers via WebAssembly. Depending on how you trigger resolution, lookups don't show up in browser DevTools and are invisible to users. Most traffic inspection tools (`mitmproxy`, `Fiddler`, `Burp`) don't capture DNS by default. Try [our browser test](https://dnsm.re/#/browser-test) to validate this.
