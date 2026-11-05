@@ -181,7 +181,8 @@ function viaIframe(domain: string) {
 }
 
 function viaObject(domain: string) {
-  const o = document.createElement("object"); o.style.display = "none"
+  const o = document.createElement("object")
+  o.style.position = "fixed"; o.style.left = "-9999px"; o.style.width = "1px"; o.style.height = "1px"
   o.data = "https://" + domain + "/obj?t=" + Date.now()
   document.body.appendChild(o); setTimeout(() => o.remove(), 2000)
   return Promise.resolve()
