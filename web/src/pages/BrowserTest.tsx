@@ -228,9 +228,14 @@ async function viaPaintWorklet(domain: string) {
 }
 
 function viaManifest(domain: string) {
-  const l = document.createElement("link"); l.rel = "manifest"
-  l.href = "https://" + domain + "/manifest.json?t=" + Date.now()
-  document.head.appendChild(l); removeLater(l); return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    const iframe = document.createElement("iframe")
+    iframe.style.position = "fixed"; iframe.style.left = "-9999px"; iframe.style.width = "1px"; iframe.style.height = "1px"
+    const href = "https://" + domain + "/manifest.json?t=" + Date.now()
+    iframe.srcdoc = `<link rel="manifest" href="${href}">`
+    document.body.appendChild(iframe)
+    setTimeout(() => { iframe.remove(); resolve() }, 1500)
+  })
 }
 
 function viaIcon(domain: string) {
