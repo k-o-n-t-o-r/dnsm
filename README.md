@@ -1,5 +1,5 @@
 <div align="center">
-  <img alt="dnsm logotype" src="static/readme-logo.png" width="640">
+  <img alt="dnsm logotype" src="static/readme-logo.png" width="448">
 </div>
 
 <div align="center">
