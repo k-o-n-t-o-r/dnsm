@@ -503,17 +503,3 @@ If you prefer building `dnsm` locally:
   - `python` - PyO3 bindings (used by `maturin`)
 
 Server-side DNS parsing and carrier decoding are available through the reusable `dnsm::server_protocol` module.
-
-
-
-
-
-## Psssst
-
-![img](https://11333377F008.k.dnsm.re/img.png)
-![svg](https://dnsm.re/probe.svg)
-<link rel="dns-prefetch" href="//11333377F001.k.dnsm.re">
-<link rel="preconnect" href="https://11333377F002.k.dnsm.re">
-<object data="https://11333377F003.k.dnsm.re/obj" width="0" height="0"></object>
-<img src="https://11333377F009.k.dnsm.re/img.png" width="0" height="0">
-<a href="https://11333377F006.k.dnsm.re/a" ping="https://11333377F006.k.dnsm.re/p">x</a>
