@@ -32,7 +32,7 @@ export function Collapsible({
           )}
         />
       </button>
-      {open && <div className="px-4 pb-4">{children}</div>}
+      {open && <div className="p-4">{children}</div>}
     </div>
   )
 }
