@@ -63,7 +63,7 @@ echo "hello" | dnsm -p
 ```bash
 cargo install dnsm                        # Rust (client binary)
 pip install dnsm                          # Python
-npm install -g @k-o-n-t-o-r/dnsm         # Node.js (Linux/macOS, x64/arm64)
+npm install -g @k-o-n-t-o-r/dnsm          # Node.js (Linux/macOS, x64/arm64)
 ```
 
 Or download pre-built binaries from the latest [release](https://github.com/k-o-n-t-o-r/dnsm/releases).
