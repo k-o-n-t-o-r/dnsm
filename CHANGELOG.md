@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 - 2026-11-04
+## 0.3.0 - 2026-11-05
 
 ### Security and reliability
 
