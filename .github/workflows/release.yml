@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      npm-recovery:
+        description: "Publish only the npm packages from an existing GitHub release"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -329,44 +334,9 @@ jobs:
           merge-multiple: true
 
       - name: Assemble npm packages
-        shell: bash
         env:
           VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          set -euxo pipefail
-
-          # linux-x64
-          mkdir -p npm/linux-x64/bin
-          tar xzf "artifacts/dnsm-${VERSION}-x86_64-unknown-linux-musl.tar.gz" -C npm/linux-x64/bin
-          chmod +x npm/linux-x64/bin/dnsm
-
-          # linux-arm64
-          mkdir -p npm/linux-arm64/bin
-          tar xzf "artifacts/dnsm-${VERSION}-aarch64-unknown-linux-musl.tar.gz" -C npm/linux-arm64/bin
-          chmod +x npm/linux-arm64/bin/dnsm
-
-          # darwin-x64
-          mkdir -p npm/darwin-x64/bin
-          tar xzf "artifacts/dnsm-${VERSION}-x86_64-apple-darwin.tar.gz" -C npm/darwin-x64/bin
-          chmod +x npm/darwin-x64/bin/dnsm
-
-          # darwin-arm64
-          mkdir -p npm/darwin-arm64/bin
-          tar xzf "artifacts/dnsm-${VERSION}-aarch64-apple-darwin.tar.gz" -C npm/darwin-arm64/bin
-          chmod +x npm/darwin-arm64/bin/dnsm
-
-          # Stamp version in all package.json files
-          for pkg in npm/dnsm npm/linux-x64 npm/linux-arm64 npm/darwin-x64 npm/darwin-arm64; do
-            jq --arg v "$VERSION" '.version = $v' "$pkg/package.json" > tmp.json && mv tmp.json "$pkg/package.json"
-          done
-          # Update optionalDependencies versions in wrapper
-          jq --arg v "$VERSION" '.optionalDependencies |= with_entries(.value = $v)' npm/dnsm/package.json > tmp.json && mv tmp.json npm/dnsm/package.json
-
-          cp README.md npm/dnsm/README.md
-          for pkg in npm/dnsm npm/linux-x64 npm/linux-arm64 npm/darwin-x64 npm/darwin-arm64; do
-            cp LICENSE "$pkg/LICENSE"
-            npm pack "./$pkg" --dry-run
-          done
+        run: ./scripts/assemble_npm_packages.sh "$VERSION" artifacts
 
       - uses: actions/upload-artifact@v4
         with:
@@ -575,6 +545,9 @@ jobs:
     if: ${{ !inputs.dry-run }}
     needs: [version, build-binaries, build-wheels, build-sdist, build-docker, build-crate, build-web, build-npm]
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -586,10 +559,54 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Install npm with trusted publishing support
+        run: npm install --global npm@12.2.1
+
       - name: Publish platform packages then wrapper
         shell: bash
+        run: |
+          set -euxo pipefail
+          for pkg in npm/linux-x64 npm/linux-arm64 npm/darwin-x64 npm/darwin-arm64; do
+            npm publish "./$pkg" --access public --provenance
+          done
+          npm publish ./npm/dnsm --access public --provenance
+
+  publish-npm-recovery:
+    name: publish npm from GitHub release
+    if: ${{ inputs.npm-recovery }}
+    needs: version
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install npm with trusted publishing support
+        run: npm install --global npm@12.2.1
+
+      - name: Download client binaries from GitHub Release
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p artifacts
+          gh release download "v${VERSION}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "dnsm-${VERSION}-*.tar.gz" \
+            --dir artifacts
+
+      - name: Assemble npm packages
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: ./scripts/assemble_npm_packages.sh "$VERSION" artifacts
+
+      - name: Publish platform packages then wrapper
         run: |
           set -euxo pipefail
           for pkg in npm/linux-x64 npm/linux-arm64 npm/darwin-x64 npm/darwin-arm64; do

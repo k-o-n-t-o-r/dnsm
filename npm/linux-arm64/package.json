@@ -15,6 +15,7 @@
   ],
   "files": [
     "bin/dnsm",
+    "README.md",
     "LICENSE"
   ]
 }
