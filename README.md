@@ -1,6 +1,5 @@
 <div align="center">
-  <img alt="dnsm ASCII logotype" src="https://raw.githubusercontent.com/k-o-n-t-o-r/dnsm/master/static/logo.png" style="max-width: 300px">
-  <br>
+  <img alt="dnsm logotype" src="static/readme-logo.png" width="640">
 </div>
 
 <div align="center">
@@ -17,9 +16,11 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.9+-blue?logo=python&logoColor=white">
 </p>
 
+Try the [browser test](https://dnsm.re/#/browser-test).
+
 ## Quick Start
 
-Encode data into DNS queries. Retrieve it on a server you control. Works from firewalled networks, CI runners, browsers -- anywhere DNS resolves.
+`dnsm` encodes arbitrary data into DNS queries, which are a blind spot in many environments that try to limit outbound network traffic.
 
 ```bash
 # Send "hello world" via DNS to our public instance
@@ -36,7 +37,7 @@ Or retrieve it via DNS:
 dig @dnsm.re f8925edd7f13.m.dnsm.re TXT +tcp +short
 ```
 
-That's it. No TCP connection, no HTTP -- just DNS. The client LZMA-compresses your input, encodes it into DNS labels, and lets recursive resolvers carry the data to the server.
+The client LZMA-compresses your input, encodes it into DNS labels, and lets recursive resolvers carry the data to the server.
 
 ### More examples
 
@@ -67,26 +68,15 @@ npm install -g @k-o-n-t-o-r/dnsm         # Node.js (Linux/macOS, x64/arm64)
 
 Or download pre-built binaries from the latest [release](https://github.com/k-o-n-t-o-r/dnsm/releases).
 
-<div align="center">
- <img src="https://raw.githubusercontent.com/k-o-n-t-o-r/dnsm/master/static/screenshots/combined_inbox_browser.png" />
-
-<h3 style="margin-top: 5px;">
-
-[Web Mailbox & Browser Test](https://dnsm.re)
-
-</h3>
-
-</div>
-
 ----
 
 ## How It Works
 
-Many environments block outbound TCP/HTTP but leave DNS resolution untouched -- firewalls, proxies, sandboxed runtimes, CI runners, browsers. DNS queries happen early in connection setup, before transport-level controls kick in, and a query can traverse the network even when no subsequent connection is possible.
+Many environments block outbound TCP/HTTP but leave DNS resolution untouched - firewalls, proxies, sandboxed runtimes, CI runners, browsers. DNS queries happen early in connection setup, before transport-level controls kick in, and a query can traverse the network even when no subsequent connection is possible.
 
 `dnsm` exploits this: it encodes bytes into the labels of a domain name (think `encoded_payload.k.dnsm.re`) and lets recursive resolvers carry that name to a zone you control. The server reassembles chunks and decodes the original payload.
 
-The protocol: inputs are LZMA-compressed, framed with headers, split into ordered chunks, and base32-encoded into valid hostname labels. Optional mailboxes provide inbox-style retrieval and multiplexing across messages and senders.
+Inputs are LZMA-compressed, framed, split into ordered chunks, and base32-encoded into valid hostname labels. Optional mailboxes provide inbox-style retrieval and multiplexing across messages and senders.
 
 ## Security Model
 
@@ -96,13 +86,9 @@ The protocol: inputs are LZMA-compressed, framed with headers, split into ordere
 - Messages are deduplicated by content within a mailbox. Sending identical payload bytes to the same mailbox again does not create a second stored message.
 - The browser test intentionally loads resources, including scripts, from generated test domains. Run it only against infrastructure you control.
 
-Use dnsm only on systems and networks where you have explicit authorization.
-
 ### Browsers
 
 The client also runs in browsers via WebAssembly. Depending on how you trigger resolution, lookups don't show up in browser DevTools and are invisible to users. Most traffic inspection tools (`mitmproxy`, `Fiddler`, `Burp`) don't capture DNS by default. Try [our browser test](https://dnsm.re/#/browser-test) to validate this.
-
-Inbox history payloads are capped at 1,000 messages and 16 MiB per response. Truncated responses include the `X-DNSM-History-Truncated: true` header, while the WebSocket cursor delivers messages that arrive between the history request and live connection. The gateway defaults to 120 HTTP/WebSocket upgrades per minute and eight concurrent WebSockets per source IP; use `--requests-per-minute` and `--max-ws-connections-per-ip` to tune or disable those limits. Browser origins are denied unless explicitly added with `--allowed-origin` (repeatable); `--allow-all-origins` remains available for isolated development. Sender IP addresses are omitted from API responses unless `--expose-peer-ip` is set.
 
 See [Privacy-Preserving Data Transmission](#privacy-preserving-data-transmission) for a white-hat use case.
 
