@@ -248,8 +248,9 @@ function viaAppleIcon(domain: string) {
 async function viaWebTransport(domain: string) {
   try {
     if ("WebTransport" in window) {
-      const wt = new (window as unknown as { WebTransport: new (url: string) => { ready: Promise<void>; close: () => void } }).WebTransport("https://" + domain + "/wt?t=" + Date.now())
+      const wt = new (window as unknown as { WebTransport: new (url: string) => { ready: Promise<void>; closed: Promise<unknown>; close: () => void } }).WebTransport("https://" + domain + "/wt?t=" + Date.now())
       const ready = wt.ready.catch(() => undefined)
+      void wt.closed.catch(() => undefined)
       await Promise.race([ready, new Promise((resolve) => setTimeout(resolve, 800))])
       try { wt.close() } catch { /* */ }
     }
